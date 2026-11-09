@@ -45,11 +45,14 @@ jobs:
           choco install innosetup -y --no-progress
           & "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" installer\openclip.iss
 
-      - uses: actions/upload-artifact@v4
+      - name: Upload installer
+        uses: actions/upload-artifact@v4
         with:
           name: OpenClip-Setup
           path: installer/Output/OpenClip-Setup.exe
-                - uses: actions/upload-artifact@v4
+
+      - name: Upload portable version (no install needed)
+        uses: actions/upload-artifact@v4
         with:
           name: OpenClip-Portable
           path: dist
