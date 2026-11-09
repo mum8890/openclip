@@ -4,14 +4,30 @@ project(OpenClip LANGUAGES CXX)
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_AUTOMOC ON)
+set(CMAKE_AUTORCC ON)
 
-find_package(Qt6 REQUIRED COMPONENTS Widgets Multimedia MultimediaWidgets)
+set(OPENCLIP_VERSION "0.4.0" CACHE STRING "App version (the GitHub release tag overrides this)")
+find_package(Qt6 REQUIRED COMPONENTS Widgets Multimedia MultimediaWidgets Network)
 
-add_executable(openclip
+set(SOURCES
     src/main.cpp
     src/mainwindow.cpp
     src/timeline.cpp
     src/timelinewidget.cpp
     src/exporter.cpp
+    src/dialogs.cpp
+    src/updater.cpp
+    src/templates.cpp
+    resources/resources.qrc
 )
-target_link_libraries(openclip PRIVATE Qt6::Widgets Qt6::Multimedia Qt6::MultimediaWidgets)
+
+if(WIN32)
+    set(ICON_PATH "${CMAKE_CURRENT_SOURCE_DIR}/resources/icon.ico")
+    configure_file(resources/app.rc.in "${CMAKE_BINARY_DIR}/app.rc" @ONLY)
+    list(APPEND SOURCES "${CMAKE_BINARY_DIR}/app.rc")
+endif()
+
+add_executable(openclip ${SOURCES})
+set_target_properties(openclip PROPERTIES WIN32_EXECUTABLE ON)
+target_compile_definitions(openclip PRIVATE OPENCLIP_VERSION="${OPENCLIP_VERSION}")
+target_link_libraries(openclip PRIVATE Qt6::Widgets Qt6::Multimedia Qt6::MultimediaWidgets Qt6::Network)

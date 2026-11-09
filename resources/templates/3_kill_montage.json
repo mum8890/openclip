@@ -1,0 +1,14 @@
+{
+  "name": "Kill Montage",
+  "description": "Four fast clips with energetic transitions and a bold title. Great for compilations.",
+  "slots": [
+    {"label": "Clip 1", "duration": 3, "speed": 1.0, "effect": "Vivid", "transition": "None"},
+    {"label": "Clip 2", "duration": 3, "speed": 1.0, "effect": "Vivid", "transition": "slideleft", "transitionDur": 0.3},
+    {"label": "Clip 3", "duration": 3, "speed": 1.0, "effect": "Vivid", "transition": "pixelize", "transitionDur": 0.4},
+    {"label": "Clip 4 (finale)", "duration": 4, "speed": 0.5, "effect": "Cinematic", "transition": "zoomin", "transitionDur": 0.4}
+  ],
+  "texts": [
+    {"text": "MONTAGE", "start": 0.3, "duration": 2.5, "style": "Yellow Outline", "position": "Center", "animation": "Fade", "size": 14}
+  ],
+  "export": {"aspect": "16:9", "fps": 60, "base": 1080}
+}

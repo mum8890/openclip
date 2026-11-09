@@ -1,0 +1,13 @@
+{
+  "name": "Cinematic Trailer",
+  "description": "Moody colour grade, slow fades through black and a neon title. Good for game trailers and intros.",
+  "slots": [
+    {"label": "Opening shot", "duration": 4, "speed": 1.0, "effect": "Cinematic", "transition": "None"},
+    {"label": "Middle shot", "duration": 4, "speed": 1.0, "effect": "Cinematic", "transition": "fadeblack", "transitionDur": 0.8},
+    {"label": "Closing shot", "duration": 4, "speed": 0.5, "effect": "Cinematic", "transition": "fadeblack", "transitionDur": 0.8}
+  ],
+  "texts": [
+    {"text": "COMING SOON", "start": 8, "duration": 3.5, "style": "Neon", "position": "Center", "animation": "Fade", "size": 12}
+  ],
+  "export": {"aspect": "16:9", "fps": 30, "base": 1080}
+}

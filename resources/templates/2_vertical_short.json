@@ -1,0 +1,13 @@
+{
+  "name": "Vertical Short (Shorts / TikTok / Reels)",
+  "description": "9:16 vertical, cropped to fill the screen. A quick hook, the slow-mo moment, and a punchy ending.",
+  "slots": [
+    {"label": "Hook (first 3 seconds)", "duration": 3, "speed": 1.0, "effect": "Vivid", "transition": "None"},
+    {"label": "The moment (slow-mo)", "duration": 4, "speed": 0.5, "effect": "Vivid", "transition": "zoomin", "transitionDur": 0.3},
+    {"label": "Ending", "duration": 3, "speed": 1.0, "effect": "Vivid", "transition": "fade", "transitionDur": 0.3}
+  ],
+  "texts": [
+    {"text": "WAIT FOR IT", "start": 0.2, "duration": 2.6, "style": "Yellow Outline", "position": "Top", "animation": "Slide up", "size": 7}
+  ],
+  "export": {"aspect": "9:16", "fps": 60, "base": 1080, "fill": true}
+}

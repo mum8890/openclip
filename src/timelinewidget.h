@@ -2,17 +2,18 @@
 #include <QWidget>
 #include "timeline.h"
 
-// Draws the track as coloured blocks with a ruler and a red playhead.
+// Draws the clips (blue) and text bars (purple) with a ruler and a red playhead.
 // Click to seek/select. Ctrl + mouse wheel to zoom.
 class TimelineWidget : public QWidget {
     Q_OBJECT
 public:
-    explicit TimelineWidget(Track* track, QWidget* parent = nullptr);
+    TimelineWidget(Track* track, QVector<TextItem>* texts, QWidget* parent = nullptr);
     void setPlayhead(double t) { m_playhead = t; update(); }
     double playhead() const { return m_playhead; }
     int selectedClip() const { return m_selected; }
-    void clearSelection() { m_selected = -1; update(); }
-    void refresh();   // call after the track changes
+    int selectedText() const { return m_selText; }
+    void clearSelection() { m_selected = -1; m_selText = -1; update(); }
+    void refresh();
 
 signals:
     void seekRequested(double t);
@@ -26,10 +27,12 @@ protected:
 private:
     double xToTime(int x) const { return (x - 10) / m_pps; }
     int timeToX(double t) const { return int(t * m_pps) + 10; }
-    void pick(int x);
+    void pick(const QPoint& pos);
 
     Track* m_track;
+    QVector<TextItem>* m_texts;
     double m_playhead = 0;
-    double m_pps = 40;      // pixels per second (zoom)
+    double m_pps = 40;
     int m_selected = -1;
+    int m_selText = -1;
 };

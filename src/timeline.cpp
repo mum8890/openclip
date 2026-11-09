@@ -7,6 +7,26 @@ double Track::duration() const {
     return total;
 }
 
+bool Track::hasTransitions() const {
+    for (int i = 1; i < m_clips.size(); ++i)
+        if (m_clips[i].transition != "None") return true;
+    return false;
+}
+
+double Track::joinOverlap(int i) const {
+    if (i <= 0 || i >= m_clips.size() || !hasTransitions()) return 0;
+    const Clip& c = m_clips[i];
+    const double maxO = 0.5 * std::min(m_clips[i - 1].duration(), c.duration());
+    const double want = (c.transition == "None") ? 0.04 : c.transitionDur;   // tiny overlap = a plain cut
+    return std::clamp(want, std::min(0.04, maxO), maxO);
+}
+
+double Track::exportDuration() const {
+    double total = duration();
+    for (int i = 1; i < m_clips.size(); ++i) total -= joinOverlap(i);
+    return total;
+}
+
 double Track::clipStart(int index) const {
     double s = 0;
     for (int i = 0; i < index && i < m_clips.size(); ++i) s += m_clips[i].duration();
@@ -35,6 +55,7 @@ bool Track::splitAt(double t) {
             const double cut = left.sourceIn + (t - start) * left.speed;
             left.sourceOut = cut;
             right.sourceIn = cut;
+            right.transition = "None";      // the new join is a plain cut
             m_clips[i] = left;
             m_clips.insert(i + 1, right);
             return true;
@@ -42,12 +63,6 @@ bool Track::splitAt(double t) {
         start = end;
     }
     return false;
-}
-
-bool Track::setSpeed(int index, double speed) {
-    if (index < 0 || index >= m_clips.size()) return false;
-    m_clips[index].speed = std::clamp(speed, 0.5, 2.0);
-    return true;
 }
 
 void Track::remove(int index) {

@@ -10,16 +10,30 @@ Requires Qt 6 (Widgets, Multimedia), CMake 3.16+, and `ffmpeg` + `ffprobe` on PA
     ./build/openclip
 
 ## Current features
-- Add clips (with or without audio), live preview player, click/drag timeline with playhead, Ctrl+wheel zoom
-- Split at playhead (S), delete (Del), play/pause (Space)
-- Per-clip speed (0.5x-2x) for slow-mo and fast-forward
-- Export MP4 at 1080p, 24/30/60 fps (H.264/AAC)
+- Add clips (with or without audio), live preview, visual timeline, zoom (Ctrl+wheel)
+- Split (S), delete (Del), play/pause (Space), per-clip speed 0.5x-2x
+- Effects: Black & White, Vivid, Warm, Cool, Cinematic, Sepia, Blur, Sharpen + brightness/contrast/saturation
+- Transitions: fade, dissolve, wipes, slides, circle open/close, pixelize, radial, zoom, blur (export + Quick preview)
+- Text overlays: 6 styles (Gaming, Yellow Outline, Neon, Red Alert, Boxed, Plain), position, fade / slide-up animation
+- Export: 480p to 8K, 24/30/60 fps, 16:9 / 9:16 / 1:1, fit or fill, quality + speed options
+- Upscaling for low-quality footage: Lanczos, + sharpen, + noise clean (classic scaling, not AI)
+- Templates: Gameplay Highlight, Vertical Short, Kill Montage, Cinematic Trailer. Templates are plain .json files in resources/templates, so anyone can write and share new ones
+- Automatic update notifications through GitHub Releases
+- Quick preview: renders a small version with all effects, transitions and text, then opens it
 
 ## Roadmap
-1. Trim handles on clip edges, drag to reorder, multiple tracks
-2. Undo/redo (QUndoStack), text overlays, zoom/crop/rotate, volume
-3. Filters, transitions, keyframes
+1. Trim handles, drag to reorder, undo/redo, multiple tracks
+2. Music / audio track, volume, fade in/out
+3. Keyframes (zoom/pan), stickers, picture-in-picture
 4. Whisper auto-captions, project save/load
-5. Gaming extras: audio-peak "highlight" detection, vertical (9:16) export for Shorts/TikTok
+5. More templates + a template gallery
+6. Optional AI upscaling (Real-ESRGAN)
 
-Pick a license before publishing (GPL-3.0 and MIT are common; FFmpeg builds with GPL parts push you toward GPL).
+License: GPL-3.0 (see LICENSE). The installer bundles a GPL build of FFmpeg.
+
+## Releasing a new version (auto-update)
+1. Upload the changed files to GitHub.
+2. GitHub -> Releases -> Draft a new release -> Choose a tag: type e.g. `v0.4.0` -> Create new tag.
+3. Title: `OpenClip 0.4.0`. Description: what's new (users see this in the update window).
+4. Publish release. After ~15 minutes the installer appears on that release, and OpenClip
+   offers the update to everyone on next start (or via Help -> Check for updates).
