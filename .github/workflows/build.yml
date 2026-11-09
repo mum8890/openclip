@@ -4,12 +4,28 @@ on:
   workflow_dispatch:
   push:
     branches: [main, master]
+  release:
+    types: [published]
+
+permissions:
+  contents: write
 
 jobs:
   build:
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
+
+      - name: Work out version
+        id: ver
+        shell: pwsh
+        run: |
+          $v = "0.4.0"
+          if ("${{ github.event_name }}" -eq "release") {
+            $v = "${{ github.event.release.tag_name }}".TrimStart("v")
+          }
+          "version=$v" >> $env:GITHUB_OUTPUT
+          Write-Host "Building version $v"
 
       - name: Install Qt
         uses: jurplel/install-qt-action@v4
@@ -20,7 +36,7 @@ jobs:
 
       - name: Build
         run: |
-          cmake -B build -S . -DCMAKE_BUILD_TYPE=Release
+          cmake -B build -S . -DCMAKE_BUILD_TYPE=Release -DOPENCLIP_VERSION=${{ steps.ver.outputs.version }}
           cmake --build build --config Release
 
       - name: Collect files and Qt DLLs
@@ -60,7 +76,7 @@ jobs:
         shell: pwsh
         run: |
           choco install innosetup -y --no-progress
-          & "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" installer\openclip.iss
+          & "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" "/DAppVer=${{ steps.ver.outputs.version }}" installer\openclip.iss
 
       - name: Upload installer
         uses: actions/upload-artifact@v4
@@ -73,3 +89,11 @@ jobs:
         with:
           name: OpenClip-Portable
           path: dist
+
+      - name: Attach installer to the GitHub release
+        if: github.event_name == 'release'
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release upload "${{ github.event.release.tag_name }}" installer/Output/OpenClip-Setup.exe --clobber --repo "${{ github.repository }}"
