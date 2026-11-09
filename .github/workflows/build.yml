@@ -1,0 +1,51 @@
+name: Build Windows installer
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main, master]
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Qt
+        uses: jurplel/install-qt-action@v4
+        with:
+          version: '6.7.2'
+          arch: 'win64_msvc2019_64'
+          modules: 'qtmultimedia'
+
+      - name: Build
+        run: |
+          cmake -B build -S . -DCMAKE_BUILD_TYPE=Release
+          cmake --build build --config Release
+
+      - name: Collect files and Qt DLLs
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory dist | Out-Null
+          Copy-Item build\Release\openclip.exe dist\
+          windeployqt --release --no-translations dist\openclip.exe
+
+      - name: Bundle FFmpeg
+        shell: pwsh
+        run: |
+          Invoke-WebRequest -Uri "https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-win64-gpl.zip" -OutFile ffmpeg.zip
+          Expand-Archive ffmpeg.zip -DestinationPath ffmpeg_tmp
+          $bin = Get-ChildItem ffmpeg_tmp -Directory | Select-Object -First 1
+          Copy-Item "$($bin.FullName)\bin\ffmpeg.exe"  dist\
+          Copy-Item "$($bin.FullName)\bin\ffprobe.exe" dist\
+
+      - name: Make installer
+        shell: pwsh
+        run: |
+          choco install innosetup -y --no-progress
+          & "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" installer\openclip.iss
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: OpenClip-Setup
+          path: installer/Output/OpenClip-Setup.exe
