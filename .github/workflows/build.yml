@@ -49,3 +49,7 @@ jobs:
         with:
           name: OpenClip-Setup
           path: installer/Output/OpenClip-Setup.exe
+                - uses: actions/upload-artifact@v4
+        with:
+          name: OpenClip-Portable
+          path: dist
