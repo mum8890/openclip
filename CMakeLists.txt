@@ -6,7 +6,7 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_AUTOMOC ON)
 set(CMAKE_AUTORCC ON)
 
-set(OPENCLIP_VERSION "0.4.0" CACHE STRING "App version (the GitHub release tag overrides this)")
+set(OPENCLIP_VERSION "0.6.0" CACHE STRING "App version (the GitHub release tag overrides this)")
 find_package(Qt6 REQUIRED COMPONENTS Widgets Multimedia MultimediaWidgets Network)
 
 set(SOURCES
@@ -17,6 +17,8 @@ set(SOURCES
     src/exporter.cpp
     src/dialogs.cpp
     src/updater.cpp
+    src/theme.cpp
+    src/project.cpp
     src/templates.cpp
     resources/resources.qrc
 )

@@ -1,0 +1,99 @@
+name: Build Windows installer
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main, master]
+  release:
+    types: [published]
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Work out version
+        id: ver
+        shell: pwsh
+        run: |
+          $v = "0.6.0"
+          if ("${{ github.event_name }}" -eq "release") {
+            $v = "${{ github.event.release.tag_name }}".TrimStart("v")
+          }
+          "version=$v" >> $env:GITHUB_OUTPUT
+          Write-Host "Building version $v"
+
+      - name: Install Qt
+        uses: jurplel/install-qt-action@v4
+        with:
+          version: '6.7.2'
+          arch: 'win64_msvc2019_64'
+          modules: 'qtmultimedia'
+
+      - name: Build
+        run: |
+          cmake -B build -S . -DCMAKE_BUILD_TYPE=Release -DOPENCLIP_VERSION=${{ steps.ver.outputs.version }}
+          cmake --build build --config Release
+
+      - name: Collect files and Qt DLLs
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory dist | Out-Null
+          Copy-Item build\Release\openclip.exe dist\
+          windeployqt --release --no-translations dist\openclip.exe
+
+      - name: Bundle FFmpeg
+        shell: pwsh
+        run: |
+          $urls = @(
+            "https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-win64-gpl.zip",
+            "https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essentials.zip"
+          )
+          $ok = $false
+          foreach ($u in $urls) {
+            for ($i = 1; ($i -le 4) -and (-not $ok); $i++) {
+              try {
+                Invoke-WebRequest -Uri $u -OutFile ffmpeg.zip -TimeoutSec 600
+                $ok = $true
+              } catch {
+                Write-Host "Attempt $i failed for ${u}: $($_.Exception.Message)"
+                Start-Sleep -Seconds (10 * $i)
+              }
+            }
+            if ($ok) { break }
+          }
+          if (-not $ok) { throw "Could not download FFmpeg from any source" }
+          Expand-Archive ffmpeg.zip -DestinationPath ffmpeg_tmp
+          $bin = Get-ChildItem ffmpeg_tmp -Directory | Select-Object -First 1
+          Copy-Item "$($bin.FullName)\bin\ffmpeg.exe"  dist\
+          Copy-Item "$($bin.FullName)\bin\ffprobe.exe" dist\
+
+      - name: Make installer
+        shell: pwsh
+        run: |
+          choco install innosetup -y --no-progress
+          & "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" "/DAppVer=${{ steps.ver.outputs.version }}" installer\openclip.iss
+
+      - name: Upload installer
+        uses: actions/upload-artifact@v4
+        with:
+          name: OpenClip-Setup
+          path: installer/Output/OpenClip-Setup.exe
+
+      - name: Upload portable version (no install needed)
+        uses: actions/upload-artifact@v4
+        with:
+          name: OpenClip-Portable
+          path: dist
+
+      - name: Attach installer to the GitHub release
+        if: github.event_name == 'release'
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release upload "${{ github.event.release.tag_name }}" installer/Output/OpenClip-Setup.exe --clobber --repo "${{ github.repository }}"

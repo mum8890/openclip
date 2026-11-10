@@ -1,6 +1,6 @@
 # OpenClip
 
-An open-source video editor written from scratch in Qt 6 / C++ (not affiliated with or derived from CapCut).
+Published by **Ghostreel**. An open-source video editor written from scratch in Qt 6 / C++ (not affiliated with or derived from CapCut).
 
 ## Build
 Requires Qt 6 (Widgets, Multimedia), CMake 3.16+, and `ffmpeg` + `ffprobe` on PATH.
@@ -10,6 +10,9 @@ Requires Qt 6 (Widgets, Multimedia), CMake 3.16+, and `ffmpeg` + `ffprobe` on PA
     ./build/openclip
 
 ## Current features
+- Pro-style workspace: dockable panels, workspaces, full menu bar
+- Save/Open projects (.openclip), unlimited-style Undo/Redo
+- Editor-style interface: media panel, preview, inspector and timeline
 - Add clips (with or without audio), live preview, visual timeline, zoom (Ctrl+wheel)
 - Split (S), delete (Del), play/pause (Space), per-clip speed 0.5x-2x
 - Effects: Black & White, Vivid, Warm, Cool, Cinematic, Sepia, Blur, Sharpen + brightness/contrast/saturation
@@ -22,6 +25,7 @@ Requires Qt 6 (Widgets, Multimedia), CMake 3.16+, and `ffmpeg` + `ffprobe` on PA
 - Quick preview: renders a small version with all effects, transitions and text, then opens it
 
 ## Roadmap
+0. (done in 0.6) dockable workspace, menus, project files, undo/redo
 1. Trim handles, drag to reorder, undo/redo, multiple tracks
 2. Music / audio track, volume, fade in/out
 3. Keyframes (zoom/pan), stickers, picture-in-picture
@@ -37,3 +41,6 @@ License: GPL-3.0 (see LICENSE). The installer bundles a GPL build of FFmpeg.
 3. Title: `OpenClip 0.4.0`. Description: what's new (users see this in the update window).
 4. Publish release. After ~15 minutes the installer appears on that release, and OpenClip
    offers the update to everyone on next start (or via Help -> Check for updates).
+
+## Download
+Latest installer: https://github.com/mum8890/openclip/releases/latest
