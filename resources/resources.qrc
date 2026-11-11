@@ -1,6 +1,7 @@
 <RCC>
   <qresource prefix="/">
     <file>icon.png</file>
+    <file>ghostreel.png</file>
     <file>templates/1_gameplay_highlight.json</file>
     <file>templates/2_vertical_short.json</file>
     <file>templates/3_kill_montage.json</file>

@@ -7,6 +7,10 @@ set(CMAKE_AUTOMOC ON)
 set(CMAKE_AUTORCC ON)
 
 set(OPENCLIP_VERSION "0.6.0" CACHE STRING "App version (the GitHub release tag overrides this)")
+# Safety net: a mangled version (like "0") would break the update popup, so refuse to build.
+if(NOT OPENCLIP_VERSION MATCHES "^[0-9]+\\.[0-9]+\\.[0-9]+")
+    message(FATAL_ERROR "OPENCLIP_VERSION must look like 1.2.3 but is '${OPENCLIP_VERSION}'")
+endif()
 find_package(Qt6 REQUIRED COMPONENTS Widgets Multimedia MultimediaWidgets Network)
 
 set(SOURCES

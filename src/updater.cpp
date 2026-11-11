@@ -16,8 +16,7 @@
 #include <QUrl>
 #include <QVersionNumber>
 
-// Change this one line if you ever move the project to another GitHub account/name.
-static const char* kRepo = "mum8890/openclip";
+static const char* kRepo = OPENCLIP_REPO;
 
 #ifdef Q_OS_WIN
 static constexpr bool kCanSelfInstall = true;

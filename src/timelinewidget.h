@@ -2,7 +2,7 @@
 #include <QWidget>
 #include "timeline.h"
 
-// Draws the clips (blue) and text bars (purple) with a ruler and a red playhead.
+// Draws the clips (blue) and text bars (purple) with a ruler and a playhead.
 // Click to seek/select. Ctrl + mouse wheel to zoom.
 class TimelineWidget : public QWidget {
     Q_OBJECT
@@ -12,11 +12,17 @@ public:
     double playhead() const { return m_playhead; }
     int selectedClip() const { return m_selected; }
     int selectedText() const { return m_selText; }
-    void clearSelection() { m_selected = -1; m_selText = -1; update(); }
+    void selectClip(int i) { m_selected = i; m_selText = -1; update(); emit selectionChanged(); }
+    void selectText(int i) { m_selText = i; m_selected = -1; update(); emit selectionChanged(); }
+    void clearSelection() { m_selected = -1; m_selText = -1; update(); emit selectionChanged(); }
+    double pixelsPerSecond() const { return m_pps; }
+    void setPixelsPerSecond(double pps);
     void refresh();
 
 signals:
     void seekRequested(double t);
+    void selectionChanged();
+    void zoomChanged(double pps);
 
 protected:
     void paintEvent(QPaintEvent*) override;
@@ -25,9 +31,9 @@ protected:
     void wheelEvent(QWheelEvent*) override;
 
 private:
-    double xToTime(int x) const { return (x - 10) / m_pps; }
-    int timeToX(double t) const { return int(t * m_pps) + 10; }
-    void pick(const QPoint& pos);
+    double xToTime(int x) const;
+    int timeToX(double t) const;
+    void pick(const QPoint& pos, bool dragging);
 
     Track* m_track;
     QVector<TextItem>* m_texts;
