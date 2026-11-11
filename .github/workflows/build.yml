@@ -20,7 +20,7 @@ jobs:
         id: ver
         shell: pwsh
         run: |
-          $v = "0.4.0"
+          $v = "0.6.0"
           if ("${{ github.event_name }}" -eq "release") {
             $v = "${{ github.event.release.tag_name }}".TrimStart("v")
           }
@@ -36,7 +36,7 @@ jobs:
 
       - name: Build
         run: |
-          cmake -B build -S . -DCMAKE_BUILD_TYPE=Release -DOPENCLIP_VERSION=${{ steps.ver.outputs.version }}
+          cmake -B build -S . -DCMAKE_BUILD_TYPE=Release "-DOPENCLIP_VERSION=${{ steps.ver.outputs.version }}"
           cmake --build build --config Release
 
       - name: Collect files and Qt DLLs
