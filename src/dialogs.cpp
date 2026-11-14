@@ -6,12 +6,15 @@
 #include <QFileDialog>
 #include <QFormLayout>
 #include <QHBoxLayout>
-#include <QMessageBox>
-#include <QPushButton>
 #include <QLabel>
 #include <QLineEdit>
+#include <QMessageBox>
+#include <QProgressBar>
+#include <QPushButton>
 #include <QSpinBox>
+#include <QTimer>
 #include <QVBoxLayout>
+#include <algorithm>
 
 namespace {
 QDoubleSpinBox* dspin(double lo, double hi, double step, double val, int dec = 2) {
@@ -46,7 +49,9 @@ bool editClipDialog(QWidget* parent, Clip& c) {
     auto* bright = dspin(-1, 1, 0.05, c.brightness);
     auto* contrast = dspin(0, 3, 0.05, c.contrast);
     auto* sat = dspin(0, 3, 0.05, c.saturation);
-    auto* trans = combo(kTransitions, c.transition);
+    auto* trans = new QComboBox;
+    for (const QString& t : kTransitions) trans->addItem(transitionLabel(t), t);
+    trans->setCurrentIndex(std::max(0, trans->findData(c.transition)));
     auto* tdur = dspin(0.1, 3.0, 0.1, c.transitionDur, 1);
     form->addRow("Speed (0.5 slow-mo, 2 fast)", speed);
     form->addRow("Effect / filter", effect);
@@ -55,11 +60,11 @@ bool editClipDialog(QWidget* parent, Clip& c) {
     form->addRow("Saturation", sat);
     form->addRow("Transition from previous clip", trans);
     form->addRow("Transition length (s)", tdur);
-    if (!runDialog(dlg, form, "Effects and transitions show up in the exported video and in Quick preview, not in the live player."))
+    if (!runDialog(dlg, form, "The player now shows the real look: pause on any frame to see the effect, and press Play to watch the rendered preview. Effects and transitions also appear in the exported video and in Quick preview."))
         return false;
     c.speed = speed->value(); c.effect = effect->currentText();
     c.brightness = bright->value(); c.contrast = contrast->value(); c.saturation = sat->value();
-    c.transition = trans->currentText(); c.transitionDur = tdur->value();
+    c.transition = trans->currentData().toString(); c.transitionDur = tdur->value();
     return true;
 }
 
@@ -224,4 +229,102 @@ bool templateDialog(QWidget* parent, VideoTemplate& chosen, QVector<SlotPick>& p
     picks.clear();
     for (int i = 0; i < paths.size(); ++i) picks.append({paths[i]->text(), starts[i]->value()});
     return true;
+}
+
+// ---- export progress ---------------------------------------------------------------------------------
+
+namespace {
+QString mmss(double seconds) {
+    const int total = int(std::max(0.0, seconds) + 0.5);
+    return QString("%1:%2").arg(total / 60, 2, 10, QChar('0')).arg(total % 60, 2, 10, QChar('0'));
+}
+} // namespace
+
+ExportProgressDialog::ExportProgressDialog(const QString& title, QWidget* parent) : QDialog(parent) {
+    setWindowTitle(title);
+    setModal(false);
+    setMinimumWidth(440);
+    m_clock.start();
+
+    auto* root = new QVBoxLayout(this);
+    root->setContentsMargins(22, 18, 22, 16);
+    root->setSpacing(8);
+
+    m_percent = new QLabel("0%");
+    m_percent->setObjectName("percent");
+    m_percent->setAlignment(Qt::AlignCenter);
+
+    m_status = new QLabel("Starting FFmpeg...");
+    m_status->setAlignment(Qt::AlignCenter);
+    m_status->setWordWrap(true);
+
+    m_bar = new QProgressBar;
+    m_bar->setObjectName("big");
+    m_bar->setRange(0, 1000);
+    m_bar->setValue(0);
+    m_bar->setTextVisible(false);
+
+    m_timing = new QLabel("Starting...");
+    m_timing->setObjectName("muted");
+    m_timing->setAlignment(Qt::AlignCenter);
+
+    auto* bottom = new QHBoxLayout;
+    m_cancel = new QPushButton("Cancel");
+    m_cancel->setMinimumWidth(110);
+    bottom->addStretch();
+    bottom->addWidget(m_cancel);
+
+    root->addWidget(m_percent);
+    root->addWidget(m_bar);
+    root->addWidget(m_status);
+    root->addWidget(m_timing);
+    root->addSpacing(4);
+    root->addLayout(bottom);
+
+    connect(m_cancel, &QPushButton::clicked, this, [this]() {
+        if (m_done) { accept(); return; }
+        if (m_cancelled) return;
+        m_cancelled = true;
+        m_cancel->setText("Cancelling...");
+        m_cancel->setEnabled(false);
+        m_status->setText("Stopping FFmpeg...");
+        emit cancelRequested();
+    });
+}
+
+void ExportProgressDialog::setProgress(double fraction) {
+    if (m_done || m_cancelled) return;
+    const double f = std::clamp(fraction, 0.0, 1.0);
+    const int pct = int(f * 100.0 + 0.5);
+    m_percent->setText(QString("%1%").arg(pct));
+    m_bar->setValue(int(f * 1000));
+    const double elapsed = m_clock.elapsed() / 1000.0;
+    if (f > 0.01 && elapsed > 1.0) {
+        const double left = elapsed * (1.0 - f) / f;
+        m_timing->setText(QString("%1 elapsed  -  about %2 left").arg(mmss(elapsed), mmss(left)));
+    } else {
+        m_timing->setText(QString("%1 elapsed").arg(mmss(elapsed)));
+    }
+}
+
+void ExportProgressDialog::setMessage(const QString& message) {
+    if (!m_done) m_status->setText(message);
+}
+
+void ExportProgressDialog::complete(bool ok, const QString& message) {
+    if (m_done) return;
+    m_done = true;
+    m_bar->setValue(ok ? 1000 : m_bar->value());
+    if (ok) {
+        m_percent->setText("100%");
+        m_status->setText(message.isEmpty() ? "Finished." : message);
+        m_timing->setText(QString("Done in %1").arg(mmss(m_clock.elapsed() / 1000.0)));
+        m_cancel->setText("Close");
+        m_cancel->setEnabled(true);
+        QTimer::singleShot(1200, this, &QDialog::accept);
+    } else {
+        m_status->setText(message.isEmpty() ? "Stopped." : message);
+        m_cancel->setText("Close");
+        m_cancel->setEnabled(true);
+    }
 }

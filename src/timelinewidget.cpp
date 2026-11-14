@@ -58,11 +58,11 @@ void TimelineWidget::paintEvent(QPaintEvent*) {
     }
     p.setFont(font());
 
-    // clips
+    // clips (transitions overlap the neighbouring bars, like in the exported video)
     const auto& clips = m_track->clips();
-    double start = 0;
     for (int i = 0; i < clips.size(); ++i) {
         const Clip& c = clips[i];
+        const double start = m_track->clipStart(i);
         const QRect r(timeToX(start), kClipY, std::max(6, int(c.duration() * m_pps) - 3), kClipH);
         const bool sel = (i == m_selected);
         QLinearGradient g(r.topLeft(), r.bottomLeft());
@@ -89,7 +89,6 @@ void TimelineWidget::paintEvent(QPaintEvent*) {
             QPolygon d; d << QPoint(m.x(), m.y() - 9) << QPoint(m.x() + 9, m.y()) << QPoint(m.x(), m.y() + 9) << QPoint(m.x() - 9, m.y());
             p.setBrush(Qt::white); p.setPen(QPen(QColor(124, 58, 237), 2)); p.drawPolygon(d);
         }
-        start += c.duration();
     }
 
     // text bars

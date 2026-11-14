@@ -13,6 +13,7 @@
 #include <QPainter>
 #include <QPixmap>
 #include <QProcess>
+#include <QResizeEvent>
 #include <QScrollArea>
 #include <QSettings>
 #include <QStatusBar>
@@ -23,16 +24,6 @@
 #include <algorithm>
 
 namespace {
-
-QString friendlyTransition(const QString& n) {
-    static const QHash<QString, QString> m{
-        {"None", "None (plain cut)"}, {"fade", "Fade"}, {"fadeblack", "Fade through black"},
-        {"fadewhite", "Fade through white"}, {"dissolve", "Dissolve"}, {"wipeleft", "Wipe left"},
-        {"wiperight", "Wipe right"}, {"slideleft", "Slide left"}, {"slideright", "Slide right"},
-        {"circleopen", "Circle open"}, {"circleclose", "Circle close"}, {"pixelize", "Pixelate"},
-        {"radial", "Radial wipe"}, {"zoomin", "Zoom in"}, {"hblur", "Blur"}};
-    return m.value(n, n);
-}
 
 QIcon glyphIcon(bool pause) {
     QPixmap pm(64, 64);
@@ -105,6 +96,21 @@ MainWindow::MainWindow() {
     m_bar->setFixedWidth(240);
     m_bar->setTextVisible(false);
 
+    // live preview timers (a still frame after scrubbing, a proxy render after edits)
+    m_fxTimer = new QTimer(this);
+    m_fxTimer->setSingleShot(true);
+    m_fxTimer->setInterval(1200);
+    connect(m_fxTimer, &QTimer::timeout, this, &MainWindow::renderFxPreview);
+    m_stillTimer = new QTimer(this);
+    m_stillTimer->setSingleShot(true);
+    m_stillTimer->setInterval(180);
+    connect(m_stillTimer, &QTimer::timeout, this, &MainWindow::renderStill);
+    // two files, so FFmpeg never writes into the file the player still has open
+    m_proxyFiles[0] = QDir::temp().filePath("openclip_fx_a.mp4");
+    m_proxyFiles[1] = QDir::temp().filePath("openclip_fx_b.mp4");
+    QFile::remove(m_proxyFiles[0]);
+    QFile::remove(m_proxyFiles[1]);
+
     // top bar (as a toolbar so it spans the whole window)
     auto* tb = new QToolBar;
     tb->setMovable(false); tb->setFloatable(false);
@@ -143,18 +149,53 @@ MainWindow::MainWindow() {
     connect(m_player, &QMediaPlayer::positionChanged, this, &MainWindow::onPosition);
     connect(m_player, &QMediaPlayer::playbackStateChanged, this, [this](QMediaPlayer::PlaybackState s) {
         m_playBtn->setIcon(glyphIcon(s == QMediaPlayer::PlayingState));
+        updatePreviewPage();
+        if (s != QMediaPlayer::PlayingState) requestStillPreview();
     });
     connect(m_player, &QMediaPlayer::mediaStatusChanged, this, [this](QMediaPlayer::MediaStatus s) {
         if (s == QMediaPlayer::LoadedMedia || s == QMediaPlayer::BufferedMedia) applyPending();
     });
-    connect(&m_exporter, &Exporter::progress, this, [this](double f) { m_bar->setValue(int(f * 1000)); });
+    connect(&m_exporter, &Exporter::progress, this, [this](double f) {
+        m_bar->setValue(int(f * 1000));
+        if (m_exportDlg) m_exportDlg->setProgress(f);
+    });
     connect(&m_exporter, &Exporter::finished, this, [this](bool ok, const QString& log) {
         const bool wasPreview = m_previewMode;
+        const bool cancelled = log.startsWith("Cancelled");
         m_previewMode = false;
-        if (!ok) { QMessageBox::warning(this, "Export failed", log.right(1500)); statusBar()->showMessage("Export failed."); return; }
+        m_exporting = false;
+        closeProgressDialog(ok, ok ? (wasPreview ? "Preview ready." : "Export finished.")
+                                   : (cancelled ? "Cancelled." : "Export failed."));
+        if (!ok) {
+            if (!cancelled) QMessageBox::warning(this, "Export failed", log.right(1500));
+            statusBar()->showMessage(cancelled ? "Export cancelled." : "Export failed.");
+            m_bar->setValue(0);
+            return;
+        }
         m_bar->setValue(1000);
         if (wasPreview) { statusBar()->showMessage("Preview ready."); QDesktopServices::openUrl(QUrl::fromLocalFile(m_previewPath)); }
         else { statusBar()->showMessage("Export finished."); QMessageBox::information(this, "Export", "Done!"); }
+    });
+
+    // the low-res proxy behind "FX preview": rendered quietly in the background
+    connect(&m_fx, &Exporter::progress, this, [this](double f) {
+        if (m_fxBadge) m_fxBadge->setText(QString("FX %1%").arg(int(f * 100.0)));
+        m_bar->setValue(int(f * 1000));
+    });
+    connect(&m_fx, &Exporter::finished, this, [this](bool ok, const QString&) {
+        m_bar->setValue(0);
+        if (!ok) {
+            if (m_fxBadge) m_fxBadge->setText(m_fxEnabled ? "FX waiting" : "");
+            if (m_proxyStale) m_fxTimer->start();
+            return;
+        }
+        if (m_fxJobGen != m_fxGen) { m_fxTimer->start(); return; }   // edited while it was rendering
+        m_proxyPath = m_fxJobPath;
+        m_proxyValid = QFileInfo(m_proxyPath).size() > 1000;
+        m_proxyStale = false;
+        if (m_fxBadge) m_fxBadge->setText(m_proxyValid ? "FX ready" : "");
+        if (m_playWhenReady && m_player->playbackState() == QMediaPlayer::PlayingState) startProxyPlayback();
+        m_playWhenReady = false;
     });
     QTimer::singleShot(2500, this, [this] { m_updater->check(false); });
 
@@ -266,7 +307,7 @@ void MainWindow::buildMenus() {
     auto* fx = clip->addMenu("Apply Effect");
     for (const QString& e : kEffects) fx->addAction(e, this, [this, e] { applyEffect(e); });
     auto* tr = clip->addMenu("Apply Transition");
-    for (const QString& t : kTransitions) tr->addAction(friendlyTransition(t), this, [this, t] { applyTransition(t); });
+    for (const QString& t : kTransitions) tr->addAction(transitionLabel(t), this, [this, t] { applyTransition(t); });
     auto* sp = clip->addMenu("Speed");
     for (double s : {0.5, 0.75, 1.0, 1.25, 1.5, 2.0}) sp->addAction(QString("%1x").arg(s), this, [this, s] { applySpeed(s); });
 
@@ -282,6 +323,11 @@ void MainWindow::buildMenus() {
     auto* view = mb->addMenu("View");
     view->addAction("Zoom In Timeline", this, [this] { m_zoom->setValue(int(m_zoom->value() * 1.25) + 1); })->setShortcut(QKeySequence("Ctrl+="));
     view->addAction("Zoom Out Timeline", this, [this] { m_zoom->setValue(int(m_zoom->value() / 1.25)); })->setShortcut(QKeySequence("Ctrl+-"));
+    view->addSeparator();
+    m_fxAction = view->addAction("FX preview (live effects and transitions)");
+    m_fxAction->setCheckable(true);
+    m_fxAction->setChecked(true);
+    connect(m_fxAction, &QAction::toggled, this, &MainWindow::setFxEnabled);
 
     auto* win = mb->addMenu("Window");
     auto* ws = win->addMenu("Workspaces");
@@ -343,6 +389,12 @@ QWidget* MainWindow::buildPlayer() {
     phl->addStretch(); phl->addWidget(phLogo); phl->addSpacing(8); phl->addWidget(phText); phl->addStretch();
     m_previewStack->addWidget(ph);
     m_previewStack->addWidget(m_video);
+    // page 2: the frame FFmpeg just rendered for this exact moment (looks, transitions, titles)
+    m_stillView = new QLabel;
+    m_stillView->setAlignment(Qt::AlignCenter);
+    m_stillView->setMinimumSize(320, 180);
+    m_stillView->setStyleSheet("background:#000;");
+    m_previewStack->addWidget(m_stillView);
     v->addWidget(m_previewStack, 1);
 
     auto* bar = new QWidget; bar->setObjectName("playerbar");
@@ -350,13 +402,23 @@ QWidget* MainWindow::buildPlayer() {
     l->setContentsMargins(12, 8, 14, 8); l->setSpacing(12);
     m_playBtn = new QPushButton; m_playBtn->setObjectName("round");
     m_playBtn->setIcon(glyphIcon(false)); m_playBtn->setIconSize(QSize(20, 20));
-    m_playBtn->setToolTip("Play / Pause (Space)");
+    m_playBtn->setToolTip("Play / Pause (Space) - plays the rendered preview when it is ready");
     m_curTime = new QLabel("00:00.0"); m_totTime = new QLabel("00:00.0"); m_totTime->setObjectName("muted");
     m_seek = new QSlider(Qt::Horizontal);
-    l->addWidget(m_playBtn); l->addWidget(m_curTime); l->addWidget(m_seek, 1); l->addWidget(m_totTime);
+    m_fxToggle = new QPushButton("FX preview");
+    m_fxToggle->setCheckable(true);
+    m_fxToggle->setChecked(true);
+    m_fxToggle->setToolTip("Show the real effect, transition and title under the playhead, and play the "
+                           "rendered preview instead of the raw clips. Turn it off on a slow computer.");
+    m_fxBadge = new QLabel;
+    m_fxBadge->setObjectName("muted");
+    m_fxBadge->setMinimumWidth(70);
+    l->addWidget(m_playBtn); l->addWidget(m_curTime); l->addWidget(m_seek, 1);
+    l->addWidget(m_fxToggle); l->addWidget(m_fxBadge); l->addWidget(m_totTime);
     v->addWidget(bar);
     connect(m_playBtn, &QPushButton::clicked, this, &MainWindow::togglePlay);
     connect(m_seek, &QSlider::sliderMoved, this, [this](int v) { seek(v / 100.0); });
+    connect(m_fxToggle, &QPushButton::toggled, this, &MainWindow::setFxEnabled);
     return w;
 }
 
@@ -384,7 +446,7 @@ QWidget* MainWindow::buildListPanel(const QString& hint, const QStringList& item
     auto* h = new QLabel(hint); h->setObjectName("hint"); h->setWordWrap(true);
     auto* list = new QListWidget;
     for (const QString& n : items) {
-        auto* it = new QListWidgetItem(transitions ? friendlyTransition(n) : n);
+        auto* it = new QListWidgetItem(transitions ? transitionLabel(n) : n);
         it->setData(Qt::UserRole, n);
         list->addItem(it);
     }
@@ -428,7 +490,7 @@ QWidget* MainWindow::buildInspector() {
     m_contrast = makeSliderRow("Contrast", 0.0, 3.0, 0.05, 2);
     m_sat = makeSliderRow("Saturation", 0.0, 3.0, 0.05, 2);
     m_transBox = new QComboBox;
-    for (const QString& t : kTransitions) m_transBox->addItem(friendlyTransition(t), t);
+    for (const QString& t : kTransitions) m_transBox->addItem(transitionLabel(t), t);
     m_transDur = makeSliderRow("Transition length", 0.1, 3.0, 0.1, 1, " s");
     cv->addWidget(ct); cv->addWidget(m_clipName);
     cv->addWidget(m_speed.box);
@@ -567,9 +629,16 @@ void MainWindow::newProject() {
     m_projectPath.clear();
     m_undo.clear(); m_redo.clear();
     m_currentClip = -1;
+    m_playProxy = false; m_proxyValid = false; m_proxyStale = true;
+    if (m_fx.isRunning()) m_fx.cancel();
+    m_fxTimer->stop();
+    if (m_stillProc) { m_stillProc->kill(); m_stillProc->deleteLater(); m_stillProc = nullptr; }
+    if (m_fxBadge) m_fxBadge->setText(m_fxEnabled ? "" : "FX off");
+    m_stillTime = -1; m_stillPix = QPixmap();
     m_tl->clearSelection();
     m_tl->refresh();
     setPlayhead(0);
+    updatePreviewPage();
     setDirty(false);
     statusBar()->showMessage("New project.");
 }
@@ -614,9 +683,13 @@ void MainWindow::openProject() {
     m_undo.clear(); m_redo.clear();
     m_projectPath = path;
     m_currentClip = -1;
+    m_playProxy = false; m_proxyValid = false; m_proxyStale = true;
+    if (m_stillProc) { m_stillProc->kill(); m_stillProc->deleteLater(); m_stillProc = nullptr; }
+    m_stillTime = -1; m_stillPix = QPixmap();
     m_tl->clearSelection();
     m_tl->refresh();
     if (!track().clips().isEmpty()) seek(0); else setPlayhead(0);
+    markFxStale();
     setDirty(false);
 
     QStringList missing;
@@ -629,6 +702,8 @@ void MainWindow::openProject() {
 
 void MainWindow::closeEvent(QCloseEvent* e) {
     if (!maybeSave()) { e->ignore(); return; }
+    if (m_stillProc) { m_stillProc->kill(); m_stillProc->waitForFinished(1000); }
+    if (m_fx.isRunning()) m_fx.cancel();
     QSettings settings("OpenClip", "OpenClip");
     settings.setValue("layout/state", saveState(1));
     e->accept();
@@ -648,6 +723,7 @@ void MainWindow::checkpoint(const QString& key) {
     m_lastKey = key;
     m_lastCheckpointMs = now;
     if (!m_dirty) setDirty(true);
+    markFxStale();          // the preview no longer matches the timeline
 }
 
 void MainWindow::restore(const Snapshot& s) {
@@ -741,7 +817,7 @@ void MainWindow::addSelectedMedia() {
 void MainWindow::applyEffect(const QString& name) {
     if (Clip* c = editClip("effect")) {
         c->effect = name; m_tl->update(); updateInspector();
-        statusBar()->showMessage("Effect: " + name + ". Use Quick preview to see it.");
+        statusBar()->showMessage("Effect: " + name + ". The preview shows the real look.");
     } else statusBar()->showMessage("Click a clip on the timeline first.");
 }
 
@@ -751,8 +827,8 @@ void MainWindow::applyTransition(const QString& name) {
     if (i == 0) { statusBar()->showMessage("The first clip has nothing before it. Click a later clip."); return; }
     checkpoint("transition");
     track().clips()[i].transition = name;
-    m_tl->update(); updateInspector();
-    statusBar()->showMessage("Transition: " + friendlyTransition(name) + ". Use Quick preview to see it.");
+    m_tl->refresh(); updateInspector();
+    statusBar()->showMessage("Transition: " + transitionLabel(name) + ". The preview shows it too.");
 }
 
 void MainWindow::applySpeed(double speed) {
@@ -806,37 +882,81 @@ void MainWindow::updateInspector() {
 
 // ---- playback ----------------------------------------------------------------------------------------------
 
-void MainWindow::setPlayhead(double t) { m_tl->setPlayhead(t); updateTimeUi(t); }
+void MainWindow::setPlayhead(double t) {
+    m_tl->setPlayhead(t);
+    updateTimeUi(t);
+    if (m_player->playbackState() != QMediaPlayer::PlayingState) requestStillPreview();
+}
 
 void MainWindow::updateTimeUi(double t) {
     const double dur = track().duration();
-    m_previewStack->setCurrentIndex(track().clips().isEmpty() ? 0 : 1);
     m_curTime->setText(clock(t));
     m_totTime->setText(clock(dur));
     QSignalBlocker b(m_seek);
     m_seek->setRange(0, int(dur * 100));
     m_seek->setValue(int(t * 100));
+    updatePreviewPage();
+}
+
+// Which picture the middle of the window shows: placeholder, live video, or the still frame.
+void MainWindow::updatePreviewPage() {
+    if (track().clips().isEmpty()) { m_previewStack->setCurrentIndex(0); return; }
+    const bool playing = m_player->playbackState() == QMediaPlayer::PlayingState;
+    const bool fresh = m_fxEnabled && !m_stillPix.isNull() &&
+                       std::abs(m_stillTime - m_tl->playhead()) < 0.2;
+    m_previewStack->setCurrentIndex((!playing && fresh) ? 2 : 1);
 }
 
 void MainWindow::togglePlay() {
     if (track().clips().isEmpty()) return;
-    if (m_player->playbackState() == QMediaPlayer::PlayingState) m_player->pause();
-    else {
-        if (m_tl->playhead() >= track().duration() - 0.05) seek(0, true);
+    if (m_playProxy) {                       // already on the rendered preview
+        if (m_player->playbackState() == QMediaPlayer::PlayingState) m_player->pause();
+        else if (m_tl->playhead() >= track().duration() - 0.05) seek(0, true);
         else m_player->play();
+        return;
+    }
+    if (m_player->playbackState() == QMediaPlayer::PlayingState) { m_player->pause(); return; }
+    if (m_tl->playhead() >= track().duration() - 0.05) setPlayhead(0);
+
+    if (m_fxEnabled && m_proxyValid && !m_proxyStale && QFileInfo::exists(m_proxyPath)) {
+        startProxyPlayback();
+        return;
+    }
+    playRawAt(m_tl->playhead(), true);        // never make the user wait: play now...
+    if (m_fxEnabled) {
+        m_playWhenReady = true;               // ...then switch to the real render when it is ready
+        renderFxPreview();
     }
 }
 
+void MainWindow::playRawAt(double t, bool play) {
+    m_playProxy = false;
+    seek(t, play);
+}
+
 void MainWindow::seek(double t, bool play) {
+    if (track().clips().isEmpty()) return;
+    t = std::clamp(t, 0.0, std::max(0.0, track().duration() - 0.001));
+
+    if (m_playProxy) {                        // the rendered preview has the same clock
+        setPlayhead(t);
+        m_pendingSeekMs = qint64(t * 1000.0);
+        m_playAfterLoad = play;
+        applyPending();                       // the proxy is already loaded
+        return;
+    }
+
     const int i = track().clipAt(t);
     if (i < 0) return;
     const Clip& c = track().clips()[i];
-    const double src = c.sourceIn + (t - track().clipStart(i)) * c.speed;
+    const double raw = c.sourceIn + (t - track().clipStart(i)) * c.speed;
+    const double src = std::clamp(raw, c.sourceIn, std::max(c.sourceIn, c.sourceOut - 0.02));
     setPlayhead(t);
     loadClip(i, src, play);
 }
 
 void MainWindow::loadClip(int index, double sourceTime, bool play) {
+    if (index < 0 || index >= track().clips().size()) return;
     const Clip& c = track().clips()[index];
     const QUrl url = QUrl::fromLocalFile(c.path);
     m_currentClip = index;
@@ -847,7 +967,15 @@ void MainWindow::loadClip(int index, double sourceTime, bool play) {
 }
 
 void MainWindow::applyPending() {
-    if (m_pendingSeekMs < 0 || m_currentClip < 0 || m_currentClip >= track().clips().size()) return;
+    if (m_pendingSeekMs < 0) return;
+    if (m_playProxy) {
+        m_player->setPlaybackRate(1.0);
+        m_player->setPosition(std::clamp<qint64>(m_pendingSeekMs, 0, qint64(track().duration() * 1000.0)));
+        m_pendingSeekMs = -1;
+        if (m_playAfterLoad) m_player->play(); else m_player->pause();
+        return;
+    }
+    if (m_currentClip < 0 || m_currentClip >= track().clips().size()) return;
     m_player->setPlaybackRate(track().clips()[m_currentClip].speed);
     m_player->setPosition(m_pendingSeekMs);
     m_pendingSeekMs = -1;
@@ -855,13 +983,27 @@ void MainWindow::applyPending() {
 }
 
 void MainWindow::onPosition(qint64 ms) {
-    if (m_currentClip < 0 || m_pendingSeekMs >= 0 || m_currentClip >= track().clips().size()) return;
+    if (m_pendingSeekMs >= 0) return;
+
+    if (m_playProxy) {                        // one file, one clock: nothing to stitch
+        setPlayhead(std::clamp(ms / 1000.0, 0.0, track().duration()));
+        return;
+    }
+    if (m_currentClip < 0 || m_currentClip >= track().clips().size()) return;
     const Clip& c = track().clips()[m_currentClip];
     const double src = ms / 1000.0;
+    const int next = m_currentClip + 1;
+    const bool hasNext = next < track().clips().size();
+    const double ovNext = hasNext ? track().joinOverlap(next) : 0.0;
+
+    // a transition starts ovNext seconds before this clip's source ends
+    if (hasNext && ovNext > 0.02 && src >= c.sourceOut - ovNext * c.speed) {
+        loadClip(next, track().clips()[next].sourceIn, true);
+        return;
+    }
     if (src >= c.sourceOut - 0.03) {
-        if (m_currentClip + 1 < track().clips().size())
-            loadClip(m_currentClip + 1, track().clips()[m_currentClip + 1].sourceIn, true);
-        else m_player->pause();
+        if (hasNext) loadClip(next, track().clips()[next].sourceIn, true);
+        else { m_player->pause(); setPlayhead(track().duration()); }
         return;
     }
     setPlayhead(track().clipStart(m_currentClip) + std::max(0.0, src - c.sourceIn) / c.speed);
@@ -871,8 +1013,15 @@ void MainWindow::onPosition(qint64 ms) {
 
 void MainWindow::afterEdit() {
     m_tl->refresh();
-    if (track().clips().isEmpty()) { m_player->stop(); m_currentClip = -1; setPlayhead(0); return; }
+    if (track().clips().isEmpty()) {
+        m_player->stop(); m_currentClip = -1; m_playProxy = false;
+        setPlayhead(0);
+        updatePreviewPage();
+        return;
+    }
+    if (m_playProxy) { m_player->pause(); m_playProxy = false; }
     seek(std::min(m_tl->playhead(), std::max(0.0, track().duration() - 0.01)));
+    markFxStale();
 }
 
 void MainWindow::splitAtPlayhead() {
@@ -933,23 +1082,172 @@ void MainWindow::newFromTemplate() {
 
 void MainWindow::exportVideo() {
     if (track().clips().isEmpty()) { statusBar()->showMessage("Add a video to the timeline first."); return; }
+    if (m_exporter.isRunning()) { statusBar()->showMessage("An export is already running."); return; }
     if (!exportDialog(this, m_settings)) return;
     const QString out = QFileDialog::getSaveFileName(this, "Export", "output.mp4", "MP4 (*.mp4)");
     if (out.isEmpty()) return;
-    m_bar->setValue(0);
+    if (m_fx.isRunning()) m_fx.cancel();
+    m_playWhenReady = false;
+    if (m_playProxy) { m_player->pause(); m_playProxy = false; }
+    m_player->pause();
+    m_exporting = true;
     m_previewMode = false;
+    m_bar->setValue(0);
+    startProgressDialog("Exporting video",
+        QString("Writing %1  -  %2x%3 at %4 fps.")
+            .arg(QFileInfo(out).fileName()).arg(m_settings.width()).arg(m_settings.height()).arg(m_settings.fps));
     statusBar()->showMessage("Exporting...");
     m_exporter.start(track(), m_texts, out, m_settings);
 }
 
 void MainWindow::quickPreview() {
     if (track().clips().isEmpty()) { statusBar()->showMessage("Add a video to the timeline first."); return; }
-    ExportSettings s;
-    s.base = 480; s.fps = 30; s.crf = 30; s.preset = "ultrafast"; s.upscale = "None";
-    s.aspect = m_settings.aspect; s.fill = m_settings.fill;
+    if (m_exporter.isRunning()) { statusBar()->showMessage("Something is already rendering."); return; }
+    if (m_fx.isRunning()) m_fx.cancel();
+    m_playWhenReady = false;
+    if (m_playProxy) { m_player->pause(); m_playProxy = false; }
     m_previewPath = QDir::temp().filePath("openclip_preview.mp4");
-    m_bar->setValue(0);
+    m_exporting = true;
     m_previewMode = true;
+    m_bar->setValue(0);
+    startProgressDialog("Quick preview",
+        "Rendering a small version with every effect, transition and title. It opens when it is ready.");
     statusBar()->showMessage("Making a quick preview...");
-    m_exporter.start(track(), m_texts, m_previewPath, s);
+    m_exporter.start(track(), m_texts, m_previewPath, Exporter::previewSettings(m_settings));
+}
+
+// ---- live preview -------------------------------------------------------------------------------------------
+
+void MainWindow::startProgressDialog(const QString& title, const QString& message) {
+    if (m_exportDlg) { m_exportDlg->close(); m_exportDlg = nullptr; }
+    m_exportDlg = new ExportProgressDialog(title, this);
+    m_exportDlg->setAttribute(Qt::WA_DeleteOnClose);
+    ExportProgressDialog* dlg = m_exportDlg;
+    connect(dlg, &ExportProgressDialog::cancelRequested, this, [this] { m_exporter.cancel(); });
+    connect(dlg, &QDialog::finished, this, [this, dlg] {
+        if (m_exportDlg == dlg) m_exportDlg = nullptr;
+        if (m_exporter.isRunning()) m_exporter.cancel();   // closed while still rendering
+    });
+    dlg->setMessage(message);
+    dlg->show();
+}
+
+void MainWindow::closeProgressDialog(bool ok, const QString& message) {
+    if (m_exportDlg) m_exportDlg->complete(ok, message);
+}
+
+void MainWindow::markFxStale() {
+    m_proxyStale = true;
+    ++m_fxGen;
+    if (m_playProxy) { m_player->pause(); m_playProxy = false; playRawAt(m_tl->playhead(), false); }
+    if (m_fx.isRunning()) m_fx.cancel();          // an old render is worthless now
+    if (!m_fxEnabled) { updatePreviewPage(); return; }
+    m_fxTimer->start();
+    requestStillPreview();
+    updatePreviewPage();
+}
+
+void MainWindow::setFxEnabled(bool on) {
+    m_fxEnabled = on;
+    if (m_fxToggle && m_fxToggle->isChecked() != on) { QSignalBlocker b(m_fxToggle); m_fxToggle->setChecked(on); }
+    if (m_fxAction && m_fxAction->isChecked() != on) { QSignalBlocker b(m_fxAction); m_fxAction->setChecked(on); }
+
+    if (!on) {
+        if (m_stillProc) { m_stillProc->kill(); m_stillProc->deleteLater(); m_stillProc = nullptr; }
+        if (m_fx.isRunning()) m_fx.cancel();
+        m_playWhenReady = false;
+        m_stillPix = QPixmap();
+        m_stillTime = -1;
+        if (m_playProxy) { m_player->pause(); m_playProxy = false; playRawAt(m_tl->playhead(), false); }
+        if (m_fxBadge) m_fxBadge->setText("FX off");
+        updatePreviewPage();
+        statusBar()->showMessage("FX preview off: the player shows the raw clips.");
+        return;
+    }
+    if (m_fxBadge) m_fxBadge->setText("");
+    markFxStale();
+    statusBar()->showMessage("FX preview on: pause to see the real look, Play for the rendered version.");
+}
+
+void MainWindow::requestStillPreview() {
+    if (!m_fxEnabled || m_exporting || track().clips().isEmpty()) return;
+    if (!m_stillTimer) return;
+    m_stillTimer->start();
+}
+
+void MainWindow::renderStill() {
+    if (!m_fxEnabled || m_exporting || track().clips().isEmpty()) return;
+    if (m_stillProc) { m_stillProc->kill(); m_stillProc->waitForFinished(500); m_stillProc->deleteLater(); m_stillProc = nullptr; }
+
+    const double at = m_tl->playhead();
+    const QString out = QDir::temp().filePath(QString("openclip_still_%1.png").arg(++m_stillGen % 2));
+    const QStringList args = m_stillFx.buildStillArgs(track(), m_texts, at, m_settings, out);
+    if (args.isEmpty()) return;
+    QFile::remove(out);
+
+    auto* p = new QProcess(this);
+    m_stillProc = p;
+    p->setProcessChannelMode(QProcess::MergedChannels);
+    connect(p, &QProcess::errorOccurred, this, [this, p](QProcess::ProcessError) {
+        if (p == m_stillProc) m_stillProc = nullptr;
+        p->deleteLater();
+    });
+    connect(p, QOverload<int, QProcess::ExitStatus>::of(&QProcess::finished), this,
+            [this, p, out, at](int code, QProcess::ExitStatus st) {
+        if (p != m_stillProc) { p->deleteLater(); return; }
+        m_stillProc = nullptr;
+        p->deleteLater();
+        if (code != 0 || st != QProcess::NormalExit) return;
+        QPixmap pm(out);
+        if (pm.isNull()) return;
+        m_stillPix = pm;
+        m_stillTime = at;
+        QSize target = m_stillView->size();
+        if (target.width() < 64 || target.height() < 36) target = QSize(960, 540);
+        m_stillView->setPixmap(pm.scaled(target, Qt::KeepAspectRatio, Qt::SmoothTransformation));
+        QFile::remove(out);
+        updatePreviewPage();
+    });
+    p->start("ffmpeg", args);
+}
+
+void MainWindow::renderFxPreview() {
+    if (!m_fxEnabled || m_exporting) return;
+    if (track().clips().isEmpty() || m_exporter.isRunning()) return;
+    if (m_fx.isRunning()) { m_fxTimer->start(); return; }   // let the cancelled job die first
+    if (track().duration() < 0.2) return;
+    if (track().duration() > 900.0) {               // 15 minutes of proxy is plenty
+        if (m_fxBadge) m_fxBadge->setText("FX too long");
+        return;
+    }
+    m_fxJobGen = m_fxGen;
+    int slot = 1 - m_proxySlot;
+    if (m_proxyFiles[slot] == m_proxyPath) slot = 1 - slot;   // never the file the player has open
+    m_proxySlot = slot;
+    m_fxJobPath = m_proxyFiles[m_proxySlot];
+    QFile::remove(m_fxJobPath);
+    if (m_fxBadge) m_fxBadge->setText("FX 0%");
+    m_fx.start(track(), m_texts, m_fxJobPath, Exporter::previewSettings(m_settings));
+}
+
+void MainWindow::startProxyPlayback() {
+    if (m_proxyPath.isEmpty() || !m_proxyValid || !QFileInfo::exists(m_proxyPath)) return;
+    m_playProxy = true;
+    m_currentClip = -1;
+    m_pendingSeekMs = qint64(std::clamp(m_tl->playhead(), 0.0, std::max(0.0, track().duration())) * 1000.0);
+    m_playAfterLoad = true;
+    m_player->setPlaybackRate(1.0);
+    if (m_fxBadge) m_fxBadge->setText("FX ready");
+    const QUrl url = QUrl::fromLocalFile(m_proxyPath);
+    if (m_player->source() == url) applyPending();     // already loaded: just seek and play
+    else m_player->setSource(url);
+}
+
+void MainWindow::resizeEvent(QResizeEvent* e) {
+    QMainWindow::resizeEvent(e);
+    if (!m_stillPix.isNull() && m_stillView) {
+        const QSize target = m_stillView->size();
+        if (target.width() > 32 && target.height() > 32)
+            m_stillView->setPixmap(m_stillPix.scaled(target, Qt::KeepAspectRatio, Qt::SmoothTransformation));
+    }
 }

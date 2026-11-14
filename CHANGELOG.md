@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.7.0 - See it before you export
+- The preview now shows the real thing: pause or scrub and a frame with every effect, transition blend and title is drawn under the playhead; press Play and OpenClip renders a small preview in the background and plays that instead of the raw clips
+- "FX preview" switch in the player bar and the View menu, for slower computers
+- New export window with a big percentage, progress bar, elapsed time, time remaining and a working Cancel button (also used by Quick preview)
+- More looks: 25 effects in total (Noir, Golden Hour, Teal & Orange, Cyberpunk, Cold Night, Vintage, Faded Film, Punch, Dream, Old Film, Invert, Mirror, Sketch, Infrared, Killcam Red, Night Vision, HDR Boost and the original eight)
+- More transitions: 51 in total, covering the whole FFmpeg xfade set (wipes, slides, smooth, circle, rectangle, diagonals, slices, pixelize, radial, zoom, blur, squeeze, cover, reveal and fades), with friendly names in the menus
+- The timeline and the exported video now share one clock: transitions overlap the clips and shorten the project instead of shifting everything after them, so the playhead lines up with the final file
+- Splitting inside a transition is prevented, and transition-aware seeking means playback switches clips at the right moment
+
 ## 0.6.0 - Pro workspace
 - Dockable panels (Project, Effects, Transitions, Titles, Templates, Properties, Timeline): drag, tab, float, close
 - Workspaces (Window menu): Editing, Assembly, Effects, Titles + Reset to Default Layout; your layout is remembered

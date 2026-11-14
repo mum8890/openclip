@@ -3,13 +3,29 @@
 #include <QStringList>
 #include <QVector>
 
+// Look presets. The first eight keep their original names so old projects still open.
 inline const QStringList kEffects{"None", "Black & White", "Vivid", "Warm", "Cool",
-                                  "Cinematic", "Sepia", "Blur", "Sharpen"};
+                                  "Cinematic", "Sepia", "Blur", "Sharpen",
+                                  "Noir", "Golden Hour", "Teal & Orange", "Cyberpunk",
+                                  "Cold Night", "Vintage", "Faded Film", "Punch", "Dream",
+                                  "Old Film", "Invert", "Mirror", "Sketch", "Infrared",
+                                  "Killcam Red", "Night Vision", "HDR Boost"};
 // names are FFmpeg xfade transitions
 inline const QStringList kTransitions{"None", "fade", "fadeblack", "fadewhite", "dissolve",
-                                      "wipeleft", "wiperight", "slideleft", "slideright",
-                                      "circleopen", "circleclose", "pixelize", "radial",
-                                      "zoomin", "hblur"};
+                                      "wipeleft", "wiperight", "wipeup", "wipedown",
+                                      "slideleft", "slideright", "slideup", "slidedown",
+                                      "smoothleft", "smoothright", "smoothup", "smoothdown",
+                                      "circleopen", "circleclose", "circlecrop", "rectcrop",
+                                      "vertopen", "vertclose", "horzopen", "horzclose",
+                                      "diagtl", "diagtr", "diagbl", "diagbr",
+                                      "hlslice", "hrslice", "vuslice", "vdslice",
+                                      "pixelize", "radial", "zoomin", "hblur", "fadegrays",
+                                      "squeezeh", "squeezev", "coverleft", "coverright",
+                                      "coverup", "coverdown", "revealleft", "revealright",
+                                      "revealup", "revealdown", "wipetl", "wipetr",
+                                      "wipebl", "wipebr"};
+// Human-readable name for an FFmpeg xfade transition (used all over the UI).
+QString transitionLabel(const QString& ffmpegName);
 inline const QStringList kTextStyles{"Gaming", "Yellow Outline", "Neon", "Red Alert", "Boxed", "Plain"};
 inline const QStringList kTextPositions{"Top", "Center", "Bottom"};
 inline const QStringList kTextAnimations{"Fade", "Slide up", "None"};
@@ -67,11 +83,11 @@ public:
     const QVector<Clip>& clips() const { return m_clips; }
     QVector<Clip>& clips() { return m_clips; }
 
-    double duration() const;                 // length as shown on the timeline
+    double duration() const;                 // length of the finished video (= exportDuration)
     double exportDuration() const;           // length after transition overlaps
     bool   hasTransitions() const;
     double joinOverlap(int index) const;     // seconds clip `index` overlaps the previous one in the export
-    double clipStart(int index) const;
+    double clipStart(int index) const;       // start of a clip on the shared output clock
     int    clipAt(double t) const;
     bool   splitAt(double t);
     void   remove(int index);

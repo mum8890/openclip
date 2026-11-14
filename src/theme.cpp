@@ -61,6 +61,9 @@ QScrollBar::add-page, QScrollBar::sub-page { background: transparent; }
 QSplitter::handle { background: #0E0E13; }
 QProgressBar { background: #1B1B25; border: none; border-radius: 4px; height: 8px; text-align: center; color: transparent; }
 QProgressBar::chunk { border-radius: 4px; background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 #22D3EE, stop:1 #7C3AED); }
+QProgressBar#big { height: 16px; border-radius: 8px; background: #22222E; }
+QProgressBar#big::chunk { border-radius: 8px; }
+QLabel#percent { font-size: 42px; font-weight: bold; color: #FFFFFF; }
 QMainWindow::separator { background: #0E0E13; width: 6px; height: 6px; }
 QMainWindow::separator:hover { background: #22D3EE; }
 QWidget#docktitle { background: #15151C; border-bottom: 1px solid #22222E; border-top-left-radius: 10px; border-top-right-radius: 10px; }

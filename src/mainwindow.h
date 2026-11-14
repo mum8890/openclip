@@ -1,4 +1,5 @@
 #pragma once
+#include <QAction>
 #include <QAudioOutput>
 #include <QCloseEvent>
 #include <QComboBox>
@@ -10,18 +11,23 @@
 #include <QMainWindow>
 #include <QMediaPlayer>
 #include <QMenu>
+#include <QPixmap>
+#include <QProcess>
 #include <QProgressBar>
 #include <QPushButton>
 #include <QSignalBlocker>
 #include <QSlider>
 #include <QStackedWidget>
+#include <QTimer>
 #include <QVideoWidget>
 #include <cmath>
+#include <functional>
 #include "timeline.h"
 #include "exporter.h"
 #include "project.h"
 #include "timelinewidget.h"
 #include "updater.h"
+#include "dialogs.h"
 
 // A labelled slider (title on the left, value on the right) used in the inspector.
 struct SliderRow {
@@ -47,6 +53,7 @@ public:
     MainWindow();
 protected:
     void closeEvent(QCloseEvent* e) override;
+    void resizeEvent(QResizeEvent* e) override;
 private:
     Track& track() { return m_timeline.mainTrack(); }
     Clip* selClip();
@@ -99,11 +106,23 @@ private:
     // playback
     void togglePlay();
     void seek(double t, bool play = false);
+    void playRawAt(double t, bool play);
     void setPlayhead(double t);
     void updateTimeUi(double t);
+    void updatePreviewPage();
     void loadClip(int index, double sourceTime, bool play);
     void applyPending();
     void onPosition(qint64 ms);
+
+    // live preview: a real still frame under the playhead + a rendered proxy for playback
+    void markFxStale();                 // after any edit: timers restart, old proxy is dropped
+    void setFxEnabled(bool on);
+    void requestStillPreview();
+    void renderStill();
+    void renderFxPreview();
+    void startProxyPlayback();
+    void startProgressDialog(const QString& title, const QString& message);
+    void closeProgressDialog(bool ok, const QString& message);
 
     // editing / output
     void splitAtPlayhead();
@@ -119,6 +138,8 @@ private:
     QVector<TextItem> m_texts;
     ExportSettings m_settings;
     Exporter m_exporter;
+    Exporter m_fx;            // renders the low-res proxy used for FX playback
+    Exporter m_stillFx;       // builds the still frame under the playhead
     Updater* m_updater;
 
     QMediaPlayer* m_player;
@@ -135,6 +156,29 @@ private:
     QSlider* m_zoom;
     QStackedWidget* m_inspector;
     QStackedWidget* m_previewStack;
+    QLabel* m_stillView;              // page 2 of the preview: the rendered still frame
+    QLabel* m_fxBadge;                // "FX 42%" / "FX ready"
+    QPushButton* m_fxToggle;          // turn the live preview off on a slow PC
+    QAction* m_fxAction = nullptr;    // same switch in the View menu
+    QTimer* m_fxTimer;                // waits for edits to settle before re-rendering the proxy
+    QTimer* m_stillTimer;             // waits for scrubbing to settle before drawing a frame
+    QProcess* m_stillProc = nullptr;
+    QPixmap m_stillPix;
+    double m_stillTime = -1;
+    int m_stillGen = 0;
+    QString m_proxyFiles[2];
+    QString m_proxyPath;
+    QString m_fxJobPath;
+    int m_proxySlot = 0;              // which of the two proxy files is written next
+    bool m_proxyValid = false;
+    bool m_proxyStale = true;
+    bool m_fxEnabled = true;
+    bool m_playProxy = false;         // the player is showing the rendered proxy
+    bool m_playWhenReady = false;     // start the proxy as soon as this render finishes
+    int m_fxGen = 0;
+    int m_fxJobGen = 0;
+    bool m_exporting = false;
+    ExportProgressDialog* m_exportDlg = nullptr;
 
     // docks (panels you can move, tab, float and close)
     QDockWidget *m_dProject, *m_dEffects, *m_dTransitions, *m_dTitles, *m_dTemplates, *m_dProps, *m_dTimeline;

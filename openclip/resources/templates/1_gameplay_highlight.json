@@ -1,0 +1,13 @@
+{
+  "name": "Gameplay Highlight",
+  "description": "Build-up, then your big moment in slow-motion, then the reaction. Big 'CLUTCH!' title pops up on the moment.",
+  "slots": [
+    {"label": "Build-up", "duration": 4, "speed": 1.0, "effect": "None", "transition": "None"},
+    {"label": "The big moment (slow-mo)", "duration": 4, "speed": 0.5, "effect": "Cinematic", "transition": "fade", "transitionDur": 0.4},
+    {"label": "Reaction / aftermath", "duration": 3, "speed": 1.0, "effect": "None", "transition": "fade", "transitionDur": 0.4}
+  ],
+  "texts": [
+    {"text": "CLUTCH!", "start": 3.5, "duration": 3, "style": "Gaming", "position": "Center", "animation": "Slide up", "size": 16}
+  ],
+  "export": {"aspect": "16:9", "fps": 60, "base": 1080}
+}
