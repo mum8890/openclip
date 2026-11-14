@@ -214,7 +214,7 @@ void AiAgent::post(const QJsonObject& body) {
 void AiAgent::handleReply(QNetworkReply* reply) {
     m_reply = nullptr;
     const QByteArray data = reply->readAll();
-    const int status = reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
+    const int httpCode = reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
     const QNetworkReply::NetworkError netError = reply->error();
     const QString netText = reply->errorString();
     reply->deleteLater();
@@ -226,7 +226,7 @@ void AiAgent::handleReply(QNetworkReply* reply) {
         emit finished();
         return;
     }
-    if (status == 0 && netError != QNetworkReply::NoError) {
+    if (httpCode == 0 && netError != QNetworkReply::NoError) {
         QString base = m_cfg.baseUrl;
         while (base.endsWith('/')) base.chop(1);
         emit failed(QString("Could not reach %1.\n\n%2\n\n"
@@ -239,8 +239,8 @@ void AiAgent::handleReply(QNetworkReply* reply) {
 
     QJsonParseError pe;
     const QJsonDocument doc = QJsonDocument::fromJson(data, &pe);
-    if (status < 200 || status >= 300) {
-        emit failed(friendlyError(status, data));
+    if (httpCode < 200 || httpCode >= 300) {
+        emit failed(friendlyError(httpCode, data));
         finish();
         return;
     }

@@ -668,7 +668,7 @@ QWidget* MainWindow::buildAiPanel() {
 
     appendChat("OpenClip AI", "Hi! Tell me how you want the video to feel, for example: "
                               "\"make clip 2 black and white and add a slow fade\", or "
-                              "\"put a title at the start for 3 seconds\".");
+                              "\"put a title at the start for 3 seconds\".", false);
     return page;
 }
 
