@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.8.0 - Drag, drop, and ask
+- Drag and drop: drag a look from the Effects panel onto any clip, or a transition from the Transitions panel onto a cut. The timeline now shows them as their own items: a purple **FX** block under each clip that has a look, and a transition block straddling the join. Drag a transition block's edge to change its length (0.1-2.0 s), click it to preview the blend, right-click to remove it. Everything is undoable
+- 10 new looks (35 in total): Neon Glow, VHS, Blocky, Chromatic, Frost, Moody, Sunkissed, Twilight, Bleach, Lomo. Each chain was tested against the bundled FFmpeg
+- AI assistant, built in: ask in plain words and the agent adds clips, looks, transitions, titles, cuts, speed and colour changes, then shows the result. It edits only the timeline and keeps a full undo history
+- Free AI options: Ollama running on your own PC (no account, no key), or free API keys from Groq, Google Gemini and OpenRouter. OpenAI and any custom OpenAI-compatible server also work
+- "Ask before changes" switch: review every action the assistant wants to take before it touches the timeline. The API key stays on your PC and only timeline details are sent, never your video files
+- New interface: aurora gradient window, frosted translucent panels, colourful cyan/violet/pink accents and a dark rounded Windows 11 title bar
+- New AI menu (Ctrl+Shift+A) and an "AI" workspace; the assistant dock tabs with Properties
+
 ## 0.7.0 - See it before you export
 - The preview now shows the real thing: pause or scrub and a frame with every effect, transition blend and title is drawn under the playhead; press Play and OpenClip renders a small preview in the background and plays that instead of the raw clips
 - "FX preview" switch in the player bar and the View menu, for slower computers

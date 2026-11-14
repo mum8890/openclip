@@ -1,6 +1,7 @@
 #pragma once
 #include <QAction>
 #include <QAudioOutput>
+#include <QCheckBox>
 #include <QCloseEvent>
 #include <QComboBox>
 #include <QDockWidget>
@@ -18,6 +19,7 @@
 #include <QSignalBlocker>
 #include <QSlider>
 #include <QStackedWidget>
+#include <QTextBrowser>
 #include <QTimer>
 #include <QVideoWidget>
 #include <cmath>
@@ -28,6 +30,7 @@
 #include "timelinewidget.h"
 #include "updater.h"
 #include "dialogs.h"
+#include "aiagent.h"
 
 // A labelled slider (title on the left, value on the right) used in the inspector.
 struct SliderRow {
@@ -67,13 +70,28 @@ private:
     QWidget* buildPlayer();
     QWidget* buildMediaPanel();
     QWidget* buildListPanel(const QString& hint, const QStringList& items, bool transitions,
-                            std::function<void(const QString&)> onClick);
+                            std::function<void(const QString&)> onClick,
+                            const QString& dragMime = QString());
     QWidget* buildTemplatesPanel();
     QWidget* buildInspector();
     QWidget* buildTimelinePanel();
+    QWidget* buildAiPanel();
     QDockWidget* makeDock(const QString& title, const QString& objectName, QWidget* content);
     void buildMenus();
     void applyWorkspace(const QString& name, bool withSizes = true);
+
+    // AI assistant
+    AiSettings aiSettings() const;
+    void saveAiSettings();
+    void applyAiPreset(int index);
+    void sendAiMessage();
+    void newAiChat();
+    void appendChat(const QString& who, const QString& text, bool user);
+    QString aiSystemPrompt() const;
+    QJsonObject runAiTool(const QString& name, const QJsonObject& args);
+    bool approveAiTools(const QJsonArray& calls);
+    QString describeAiCall(const QString& name, const QJsonObject& args) const;
+    QJsonObject timelineSnapshot();
 
     // project
     ProjectData collect() const;
@@ -210,4 +228,17 @@ private:
     bool m_playAfterLoad = false;
     bool m_previewMode = false;
     QString m_previewPath;
+
+    // AI assistant
+    QDockWidget* m_dAi = nullptr;
+    QTextBrowser* m_chat = nullptr;
+    QLineEdit* m_aiInput = nullptr;
+    QPushButton* m_aiSend = nullptr;
+    QLabel* m_aiStatus = nullptr;
+    QComboBox* m_aiPreset = nullptr;
+    QLineEdit* m_aiUrl = nullptr;
+    QLineEdit* m_aiModel = nullptr;
+    QLineEdit* m_aiKey = nullptr;
+    QCheckBox* m_aiAsk = nullptr;
+    AiAgent* m_agent = nullptr;
 };

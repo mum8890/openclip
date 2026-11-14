@@ -52,6 +52,16 @@ QString effectFilters(const Clip& c) {
     else if (e == "Killcam Red") f += ",colorbalance=rs=0.30:gs=-0.10:bs=-0.15,eq=saturation=1.3:contrast=1.15";
     else if (e == "Night Vision") f += ",hue=s=0,colorbalance=gs=0.5:rs=-0.2:bs=-0.2,eq=contrast=1.2,noise=alls=6:allf=t";
     else if (e == "HDR Boost") f += ",eq=contrast=1.12:saturation=1.25:gamma=1.05,unsharp=5:5:0.6";
+    else if (e == "Neon Glow") f += ",eq=saturation=1.6:contrast=1.12,colorbalance=rs=0.1:bs=0.22,gblur=sigma=1.1,unsharp=5:5:0.8:5:5:0";
+    else if (e == "VHS")       f += ",noise=alls=12:allf=t,curves=preset=vintage,colorbalance=rs=0.12:bs=0.08,eq=saturation=1.2";
+    else if (e == "Blocky")    f += ",scale=iw/8:ih/8:flags=neighbor,scale=iw*8:ih*8:flags=neighbor";
+    else if (e == "Chromatic") f += ",rgbashift=rh=3:bh=-3";
+    else if (e == "Frost")     f += ",colorbalance=rs=-0.08:gs=0.02:bs=0.22,eq=brightness=0.06:saturation=0.8:contrast=1.05";
+    else if (e == "Moody")     f += ",eq=brightness=-0.06:contrast=1.2:saturation=0.85,colorbalance=bs=0.12";
+    else if (e == "Sunkissed") f += ",colorbalance=rs=0.25:gs=0.12:bs=-0.2,eq=brightness=0.05:saturation=1.25";
+    else if (e == "Twilight")  f += ",colorbalance=rs=0.10:bs=0.30:gm=-0.05,eq=brightness=-0.03:contrast=1.1:saturation=1.1";
+    else if (e == "Bleach")    f += ",eq=saturation=0.6:contrast=1.35:brightness=0.05,curves=preset=strong_contrast";
+    else if (e == "Lomo")      f += ",curves=preset=cross_process,eq=saturation=1.25:contrast=1.1,noise=alls=8:allf=t,vignette=PI/3.5";
     if (c.brightness != 0.0 || c.contrast != 1.0 || c.saturation != 1.0)
         f += QString(",eq=brightness=%1:contrast=%2:saturation=%3")
                  .arg(num(c.brightness), num(c.contrast), num(c.saturation));

@@ -1,21 +1,34 @@
 #include "timelinewidget.h"
+#include <QContextMenuEvent>
+#include <QDragEnterEvent>
+#include <QDragMoveEvent>
+#include <QDropEvent>
 #include <QFileInfo>
 #include <QFontMetrics>
 #include <QLinearGradient>
+#include <QMenu>
+#include <QMimeData>
 #include <QMouseEvent>
 #include <QPainter>
 #include <QPainterPath>
+#include <QToolTip>
 #include <QWheelEvent>
 #include <algorithm>
+#include <cmath>
 
 namespace {
-constexpr int kLeft = 78, kRulerH = 26, kClipY = 40, kClipH = 62, kTextY = 112, kTextH = 30;
+constexpr int kLeft = 78, kRulerH = 26, kClipY = 40, kClipH = 62;
+constexpr int kFxY = 108, kFxH = 24, kTextY = 140, kTextH = 30, kMinH = 182;
 const QColor kAccent(34, 211, 238);
+const char* kEffectMime = "application/x-openclip-effect";
+const char* kTransMime  = "application/x-openclip-transition";
 }
 
 TimelineWidget::TimelineWidget(Track* track, QVector<TextItem>* texts, QWidget* parent)
     : QWidget(parent), m_track(track), m_texts(texts) {
-    setMinimumHeight(156);
+    setMinimumHeight(kMinH);
+    setAcceptDrops(true);
+    setMouseTracking(true);
     refresh();
 }
 
@@ -32,19 +45,65 @@ void TimelineWidget::refresh() {
     double end = m_track->duration();
     for (const TextItem& t : *m_texts) end = std::max(end, t.start + t.duration);
     setMinimumWidth(std::max(900, timeToX(end) + 240));
+    setMinimumHeight(kMinH);
     update();
+}
+
+QRect TimelineWidget::transitionRect(int index) const {
+    const auto& clips = m_track->clips();
+    if (index <= 0 || index >= clips.size() || clips[index].transition == "None") return {};
+    const double ov = m_track->joinOverlap(index);
+    if (ov <= 0.001) return {};
+    const int x = timeToX(m_track->clipStart(index));
+    const int w = std::max(30, int(ov * m_pps));
+    const int h = 24;
+    return QRect(x - w / 2, kClipY + (kClipH - h) / 2, w, h);
+}
+
+int TimelineWidget::hitTransition(const QPoint& pos) const {
+    for (int i = 1; i < m_track->clips().size(); ++i) {
+        const QRect r = transitionRect(i);
+        if (!r.isEmpty() && r.contains(pos)) return i;
+    }
+    return -1;
+}
+
+int TimelineWidget::hitEffect(const QPoint& pos) const {
+    if (pos.y() < kFxY - 4 || pos.y() > kFxY + kFxH + 4) return -1;
+    const auto& clips = m_track->clips();
+    for (int i = 0; i < clips.size(); ++i) {
+        if (clips[i].effect == "None") continue;
+        const QRect r(timeToX(m_track->clipStart(i)), kFxY,
+                      std::max(6, int(clips[i].duration() * m_pps) - 3), kFxH);
+        if (r.contains(pos)) return i;
+    }
+    return -1;
+}
+
+int TimelineWidget::nearestJoin(int x) const {
+    int best = -1, bestD = 34;
+    for (int i = 1; i < m_track->clips().size(); ++i) {
+        const int d = std::abs(x - timeToX(m_track->clipStart(i)));
+        if (d < bestD) { bestD = d; best = i; }
+    }
+    return best;
 }
 
 void TimelineWidget::paintEvent(QPaintEvent*) {
     QPainter p(this);
     p.setRenderHint(QPainter::Antialiasing);
-    p.fillRect(rect(), QColor(14, 14, 19));
+    QLinearGradient backdrop(0, 0, 0, height());
+    backdrop.setColorAt(0, QColor(16, 15, 29));
+    backdrop.setColorAt(1, QColor(10, 10, 20));
+    p.fillRect(rect(), backdrop);
 
     // lanes
     p.setPen(Qt::NoPen);
-    p.setBrush(QColor(23, 23, 31));
+    p.setBrush(QColor(27, 26, 43));
     p.drawRoundedRect(QRect(kLeft, kClipY - 4, width() - kLeft - 6, kClipH + 8), 8, 8);
-    p.setBrush(QColor(20, 20, 27));
+    p.setBrush(QColor(32, 27, 50));
+    p.drawRoundedRect(QRect(kLeft, kFxY - 3, width() - kLeft - 6, kFxH + 6), 8, 8);
+    p.setBrush(QColor(24, 23, 38));
     p.drawRoundedRect(QRect(kLeft, kTextY - 3, width() - kLeft - 6, kTextH + 6), 8, 8);
 
     // ruler
@@ -83,12 +142,50 @@ void TimelineWidget::paintEvent(QPaintEvent*) {
         p.setFont(small);
         p.drawText(r.adjusted(10, 0, -8, -8), Qt::AlignLeft | Qt::AlignBottom, fm.elidedText(meta, Qt::ElideRight, r.width() - 18));
         p.setFont(font());
+    }
 
-        if (i > 0 && c.transition != "None") {           // transition diamond on the join
-            const QPoint m(r.left(), kClipY + kClipH / 2);
-            QPolygon d; d << QPoint(m.x(), m.y() - 9) << QPoint(m.x() + 9, m.y()) << QPoint(m.x(), m.y() + 9) << QPoint(m.x() - 9, m.y());
-            p.setBrush(Qt::white); p.setPen(QPen(QColor(124, 58, 237), 2)); p.drawPolygon(d);
+    // FX lane: one block per clip that has a look, so the look is a separate item you can see
+    QFontMetrics fxMetrics(font());
+    for (int i = 0; i < clips.size(); ++i) {
+        const Clip& c = clips[i];
+        if (c.effect == "None") continue;
+        const QRect r(timeToX(m_track->clipStart(i)), kFxY,
+                      std::max(6, int(c.duration() * m_pps) - 3), kFxH);
+        const bool sel = (i == m_selected);
+        QLinearGradient g(r.topLeft(), r.topRight());
+        g.setColorAt(0, sel ? QColor(167, 139, 250) : QColor(124, 58, 237));
+        g.setColorAt(1, sel ? QColor(244, 114, 182) : QColor(190, 60, 150));
+        p.setBrush(g);
+        p.setPen(sel ? QPen(kAccent, 2) : QPen(QColor(196, 160, 255, 120), 1));
+        p.drawRoundedRect(r.adjusted(1, 1, -1, -1), 6, 6);
+        p.setPen(Qt::white);
+        p.setFont(small);
+        p.drawText(r.adjusted(8, 0, -6, 0), Qt::AlignLeft | Qt::AlignVCenter,
+                   fxMetrics.elidedText("FX  " + c.effect, Qt::ElideRight, r.width() - 12));
+        p.setFont(font());
+    }
+
+    // transition blocks straddling each join (drag the edge to change the length)
+    for (int i = 1; i < clips.size(); ++i) {
+        const QRect r = transitionRect(i);
+        if (r.isEmpty()) continue;
+        QLinearGradient g(r.topLeft(), r.topRight());
+        g.setColorAt(0, QColor(34, 211, 238));
+        g.setColorAt(1, QColor(139, 92, 246));
+        p.setBrush(g);
+        const bool hot = (i == m_hoverTrans || i == m_dragJoin);
+        p.setPen(hot ? QPen(Qt::white, 2) : QPen(QColor(230, 240, 255, 180), 1));
+        p.drawRoundedRect(r, 7, 7);
+        p.setPen(Qt::white);
+        QFont tf = font(); tf.setPixelSize(10); tf.setBold(true); p.setFont(tf);
+        if (r.width() >= 52) {
+            QFontMetrics tfm(tf);
+            p.drawText(r.adjusted(8, 0, -6, 0), Qt::AlignCenter,
+                       tfm.elidedText(transitionLabel(clips[i].transition), Qt::ElideRight, r.width() - 14));
+        } else {
+            p.drawText(r, Qt::AlignCenter, QString::fromUtf8("\xE2\x87\x84"));
         }
+        p.setFont(font());
     }
 
     // text bars
@@ -104,12 +201,32 @@ void TimelineWidget::paintEvent(QPaintEvent*) {
         p.drawText(r.adjusted(9, 0, -6, 0), Qt::AlignLeft | Qt::AlignVCenter, fm.elidedText("T  " + t.text, Qt::ElideRight, r.width() - 14));
     }
 
+    // drag feedback from the side panels
+    if (m_dragClip >= 0 && m_dragClip < clips.size()) {
+        const QRect r(timeToX(m_track->clipStart(m_dragClip)), kClipY,
+                      std::max(6, int(clips[m_dragClip].duration() * m_pps) - 3), kClipH);
+        p.setBrush(Qt::NoBrush);
+        p.setPen(QPen(kAccent, 3));
+        p.drawRoundedRect(r.adjusted(-2, -2, 2, 2), 10, 10);
+    }
+    if (m_dragJoin > 0 && m_dragJoin < clips.size()) {
+        QRect r = transitionRect(m_dragJoin);
+        if (r.isEmpty()) {
+            const int x = timeToX(m_track->clipStart(m_dragJoin));
+            r = QRect(x - 16, kClipY + kClipH / 2 - 16, 32, 32);
+        }
+        p.setBrush(Qt::NoBrush);
+        p.setPen(QPen(kAccent, 3));
+        p.drawRoundedRect(r.adjusted(-3, -3, 3, 3), 10, 10);
+    }
+
     // left gutter with lane names (drawn last so it covers scrolled content edges)
     p.setPen(Qt::NoPen);
-    p.fillRect(QRect(0, 0, kLeft - 6, height()), QColor(14, 14, 19));
+    p.fillRect(QRect(0, 0, kLeft - 6, height()), QColor(13, 13, 24));
     p.setPen(QColor(120, 120, 140));
     p.setFont(small);
     p.drawText(QRect(8, kClipY, kLeft - 20, kClipH), Qt::AlignLeft | Qt::AlignVCenter, "VIDEO");
+    p.drawText(QRect(8, kFxY, kLeft - 20, kFxH), Qt::AlignLeft | Qt::AlignVCenter, "FX");
     p.drawText(QRect(8, kTextY, kLeft - 20, kTextH), Qt::AlignLeft | Qt::AlignVCenter, "TEXT");
     p.setFont(font());
 
@@ -145,10 +262,91 @@ void TimelineWidget::pick(const QPoint& pos, bool dragging) {
 
 void TimelineWidget::mousePressEvent(QMouseEvent* e) {
     if (e->position().x() < kLeft - 6) return;
-    pick(e->position().toPoint(), false);
+    const QPoint pos = e->position().toPoint();
+
+    if (e->button() == Qt::LeftButton) {
+        const int tr = hitTransition(pos);
+        if (tr > 0) {
+            selectClip(tr);
+            const int edge = 7;
+            const QRect r = transitionRect(tr);
+            if (std::abs(pos.x() - r.left()) <= edge || std::abs(pos.x() - r.right()) <= edge) {
+                m_resizing = true;
+                m_resizeIndex = tr;
+                m_resizeStartX = pos.x();
+                m_resizeStartDur = m_track->clips()[tr].transitionDur;
+                emit transitionEditStarted(tr);
+            } else {
+                // jump to the middle of the blend so the preview shows it
+                const double mid = m_track->clipStart(tr) + m_track->joinOverlap(tr) / 2.0;
+                m_playhead = mid;
+                emit seekRequested(mid);
+            }
+            update();
+            return;
+        }
+        const int fx = hitEffect(pos);
+        if (fx >= 0) {
+            selectClip(fx);
+            m_playhead = std::clamp(xToTime(pos.x()), 0.0, std::max(0.0, m_track->duration() - 0.001));
+            emit seekRequested(m_playhead);
+            update();
+            return;
+        }
+    }
+    pick(pos, false);
 }
+
 void TimelineWidget::mouseMoveEvent(QMouseEvent* e) {
-    if (e->buttons() & Qt::LeftButton) pick(e->position().toPoint(), true);
+    const QPoint pos = e->position().toPoint();
+
+    if (m_resizing && (e->buttons() & Qt::LeftButton)) {
+        auto& clips = m_track->clips();
+        if (m_resizeIndex > 0 && m_resizeIndex < clips.size()) {
+            const double maxDur = std::max(0.1, std::min(2.0, 0.5 * std::min(clips[m_resizeIndex - 1].duration(),
+                                                                          clips[m_resizeIndex].duration())));
+            const double nd = std::clamp(m_resizeStartDur + 2.0 * (pos.x() - m_resizeStartX) / m_pps, 0.1, maxDur);
+            clips[m_resizeIndex].transitionDur = nd;
+            update();
+        }
+        return;
+    }
+    if (e->buttons() & Qt::LeftButton) {
+        pick(pos, true);
+        return;
+    }
+
+    const int tr = hitTransition(pos);
+    if (tr != m_hoverTrans) {
+        m_hoverTrans = tr;
+        update();
+        if (tr > 0) {
+            QToolTip::showText(e->globalPosition().toPoint(),
+                QStringLiteral("%1  \u00B7  %2s\nDrag the edge to change the length")
+                    .arg(transitionLabel(m_track->clips()[tr].transition))
+                    .arg(m_track->clips()[tr].transitionDur, 0, 'f', 1), this);
+        } else {
+            QToolTip::hideText();
+        }
+    }
+}
+
+void TimelineWidget::mouseReleaseEvent(QMouseEvent* e) {
+    if (m_resizing) {
+        m_resizing = false;
+        m_resizeIndex = -1;
+        emit transitionEditFinished();
+        update();
+        return;
+    }
+    QWidget::mouseReleaseEvent(e);
+}
+
+void TimelineWidget::leaveEvent(QEvent* e) {
+    m_hoverTrans = -1;
+    QToolTip::hideText();
+    update();
+    QWidget::leaveEvent(e);
 }
 
 void TimelineWidget::wheelEvent(QWheelEvent* e) {
@@ -156,4 +354,97 @@ void TimelineWidget::wheelEvent(QWheelEvent* e) {
         setPixelsPerSecond(m_pps * (e->angleDelta().y() > 0 ? 1.25 : 0.8));
         e->accept();
     } else QWidget::wheelEvent(e);
+}
+
+void TimelineWidget::dragEnterEvent(QDragEnterEvent* e) {
+    if (e->mimeData()->hasFormat(kEffectMime) || e->mimeData()->hasFormat(kTransMime)) {
+        e->setDropAction(Qt::CopyAction);
+        e->accept();
+    } else e->ignore();
+}
+
+void TimelineWidget::dragMoveEvent(QDragMoveEvent* e) {
+    const QPoint pos = e->position().toPoint();
+    if (e->mimeData()->hasFormat(kEffectMime)) {
+        const int i = m_track->clipAt(std::clamp(xToTime(pos.x()), 0.0, std::max(0.0, m_track->duration() - 0.001)));
+        m_dragClip = (i >= 0) ? i : -1;
+        m_dragJoin = -1;
+        if (i >= 0) { e->setDropAction(Qt::CopyAction); e->accept(); } else e->ignore();
+        update();
+        return;
+    }
+    if (e->mimeData()->hasFormat(kTransMime)) {
+        int j = nearestJoin(pos.x());
+        if (j <= 0) {
+            const int i = m_track->clipAt(std::clamp(xToTime(pos.x()), 0.0, std::max(0.0, m_track->duration() - 0.001)));
+            if (i > 0) j = i;
+        }
+        m_dragJoin = j;
+        m_dragClip = -1;
+        if (j > 0) { e->setDropAction(Qt::CopyAction); e->accept(); } else e->ignore();
+        update();
+        return;
+    }
+    e->ignore();
+}
+
+void TimelineWidget::dragLeaveEvent(QDragLeaveEvent* e) {
+    m_dragClip = -1;
+    m_dragJoin = -1;
+    update();
+    QWidget::dragLeaveEvent(e);
+}
+
+void TimelineWidget::dropEvent(QDropEvent* e) {
+    const QPoint pos = e->position().toPoint();
+    m_dragClip = -1;
+    m_dragJoin = -1;
+
+    if (e->mimeData()->hasFormat(kEffectMime)) {
+        const QString name = QString::fromUtf8(e->mimeData()->data(kEffectMime));
+        const int i = m_track->clipAt(std::clamp(xToTime(pos.x()), 0.0, std::max(0.0, m_track->duration() - 0.001)));
+        if (i >= 0 && !name.isEmpty()) {
+            emit effectDropped(name, i);
+            e->setDropAction(Qt::CopyAction);
+            e->accept();
+        } else e->ignore();
+        update();
+        return;
+    }
+    if (e->mimeData()->hasFormat(kTransMime)) {
+        const QString name = QString::fromUtf8(e->mimeData()->data(kTransMime));
+        int j = nearestJoin(pos.x());
+        if (j <= 0) {
+            const int i = m_track->clipAt(std::clamp(xToTime(pos.x()), 0.0, std::max(0.0, m_track->duration() - 0.001)));
+            if (i > 0) j = i;
+        }
+        if (j > 0 && !name.isEmpty()) {
+            emit transitionDropped(name, j);
+            e->setDropAction(Qt::CopyAction);
+            e->accept();
+        } else e->ignore();
+        update();
+        return;
+    }
+    e->ignore();
+}
+
+void TimelineWidget::contextMenuEvent(QContextMenuEvent* e) {
+    const int tr = hitTransition(e->pos());
+    if (tr > 0) {
+        QMenu menu(this);
+        QAction* remove = menu.addAction("Remove transition");
+        QAction* chosen = menu.exec(e->globalPos());
+        if (chosen == remove) emit removeTransitionRequested(tr);
+        return;
+    }
+    const int fx = hitEffect(e->pos());
+    if (fx >= 0) {
+        QMenu menu(this);
+        QAction* remove = menu.addAction("Remove effect");
+        QAction* chosen = menu.exec(e->globalPos());
+        if (chosen == remove) emit removeEffectRequested(fx);
+        return;
+    }
+    QWidget::contextMenuEvent(e);
 }

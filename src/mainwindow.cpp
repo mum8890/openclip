@@ -8,13 +8,18 @@
 #include <QFileDialog>
 #include <QFileInfo>
 #include <QHBoxLayout>
+#include <QJsonArray>
+#include <QJsonDocument>
+#include <QJsonObject>
 #include <QMenuBar>
 #include <QMessageBox>
+#include <QMimeData>
 #include <QPainter>
 #include <QPixmap>
 #include <QProcess>
 #include <QResizeEvent>
 #include <QScrollArea>
+#include <QScrollBar>
 #include <QSettings>
 #include <QStatusBar>
 #include <QTimer>
@@ -71,6 +76,61 @@ QWidget* scrolled(QWidget* page) {
     return sa;
 }
 
+// A list whose items can be dragged onto the timeline (effects, transitions).
+// No Q_OBJECT needed: it only overrides a virtual.
+class DragList : public QListWidget {
+public:
+    explicit DragList(const QString& mime, QWidget* parent = nullptr)
+        : QListWidget(parent), m_mime(mime) {
+        setDragEnabled(true);
+        setDragDropMode(QAbstractItemView::DragOnly);
+        setDefaultDropAction(Qt::CopyAction);
+    }
+protected:
+    QMimeData* mimeData(const QList<QListWidgetItem*>& items) const override {
+        if (items.isEmpty() || m_mime.isEmpty()) return QListWidget::mimeData(items);
+        auto* md = new QMimeData;
+        const QListWidgetItem* it = items.first();
+        md->setData(m_mime, it->data(Qt::UserRole).toString().toUtf8());
+        md->setText(it->text());
+        return md;
+    }
+    // Always drag a copy, so the effect/transition list never loses its items.
+    void startDrag(Qt::DropActions) override { QListWidget::startDrag(Qt::CopyAction); }
+private:
+    QString m_mime;
+};
+
+// Free / low-cost ways to run the assistant. Every entry is OpenAI-compatible.
+struct AiPresetInfo {
+    const char* key;
+    const char* label;
+    const char* url;
+    const char* model;
+    bool needsKey;
+    const char* note;
+};
+const AiPresetInfo kAiPresets[] = {
+    {"ollama", "Ollama - free, runs on this PC", "http://localhost:11434/v1", "llama3.2", false,
+     "No account and no key. Install Ollama, then run: ollama pull llama3.2"},
+    {"groq", "Groq - free API key", "https://api.groq.com/openai/v1", "llama-3.3-70b-versatile", true,
+     "Free key from console.groq.com"},
+    {"gemini", "Google Gemini - free API key", "https://generativelanguage.googleapis.com/v1beta/openai",
+     "gemini-2.0-flash", true, "Free key from aistudio.google.com"},
+    {"openrouter", "OpenRouter - free models", "https://openrouter.ai/api/v1",
+     "meta-llama/llama-3.3-70b-instruct:free", true, "Free key from openrouter.ai/keys"},
+    {"openai", "OpenAI - paid key", "https://api.openai.com/v1", "gpt-4o-mini", true,
+     "Uses your own OpenAI credits."},
+    {"custom", "Custom OpenAI-compatible server", "", "", false,
+     "Point it at any server that speaks the OpenAI chat API."},
+};
+
+const AiPresetInfo* findAiPreset(const QString& key) {
+    for (const auto& p : kAiPresets)
+        if (key == QLatin1String(p.key)) return &p;
+    return nullptr;
+}
+
 } // namespace
 
 // ---------------------------------------------------------------------------------------------
@@ -91,6 +151,7 @@ MainWindow::MainWindow() {
     m_player->setVideoOutput(m_video);
     m_tl = new TimelineWidget(&track(), &m_texts);
     m_updater = new Updater(this);
+    m_agent = new AiAgent(this);
     m_bar = new QProgressBar;
     m_bar->setRange(0, 1000);
     m_bar->setFixedWidth(240);
@@ -127,17 +188,22 @@ MainWindow::MainWindow() {
     // panels you can drag around, tab together, float or close
     m_dProject = makeDock("Project", "dock_project", buildMediaPanel());
     m_dEffects = makeDock("Effects", "dock_effects",
-        buildListPanel("Click a clip on the timeline, then click a look to apply it.", kEffects, false,
-                       [this](const QString& s) { applyEffect(s); }));
+        buildListPanel("Drag a look onto any clip on the timeline (it appears as a purple FX block), "
+                       "or click a look to apply it to the selected clip.",
+                       kEffects, false, [this](const QString& s) { applyEffect(s); },
+                       "application/x-openclip-effect"));
     m_dTransitions = makeDock("Transitions", "dock_transitions",
-        buildListPanel("Click a clip (not the first one), then click a transition. It blends from the clip before it.",
-                       kTransitions, true, [this](const QString& s) { applyTransition(s); }));
+        buildListPanel("Drag a transition onto a cut between two clips (it appears as a block on the join, "
+                       "drag its edge to change the length), or click a later clip then click a transition.",
+                       kTransitions, true, [this](const QString& s) { applyTransition(s); },
+                       "application/x-openclip-transition"));
     m_dTitles = makeDock("Titles", "dock_titles",
         buildListPanel("Move the white line to where you want the title, then click a style. Edit the words in Properties.",
                        kTextStyles, false, [this](const QString& s) { addTextWithStyle(s); }));
     m_dTemplates = makeDock("Templates", "dock_templates", buildTemplatesPanel());
     m_dProps = makeDock("Properties", "dock_props", buildInspector());
     m_dTimeline = makeDock("Timeline", "dock_timeline", buildTimelinePanel());
+    m_dAi = makeDock("AI Assistant", "dock_ai", buildAiPanel());
 
     buildMenus();
     statusBar()->addPermanentWidget(m_bar);
@@ -146,6 +212,66 @@ MainWindow::MainWindow() {
     connect(m_tl, &TimelineWidget::seekRequested, this, [this](double t) { seek(t); });
     connect(m_tl, &TimelineWidget::selectionChanged, this, &MainWindow::updateInspector);
     connect(m_tl, &TimelineWidget::zoomChanged, this, [this](double pps) { QSignalBlocker b(m_zoom); m_zoom->setValue(int(pps)); });
+
+    // drag and drop from the Effects / Transitions panels
+    connect(m_tl, &TimelineWidget::effectDropped, this, [this](const QString& name, int i) {
+        if (i < 0 || i >= track().clips().size() || !kEffects.contains(name)) return;
+        checkpoint("drop-effect");
+        track().clips()[i].effect = name;
+        m_tl->selectClip(i);
+        m_tl->refresh();
+        updateInspector();
+        afterEdit();
+        statusBar()->showMessage(QString("Dropped %1 on clip %2. It shows in the FX lane.").arg(name).arg(i + 1));
+    });
+    connect(m_tl, &TimelineWidget::transitionDropped, this, [this](const QString& name, int i) {
+        if (i <= 0 || i >= track().clips().size() || !kTransitions.contains(name)) return;
+        checkpoint("drop-transition");
+        track().clips()[i].transition = name;
+        m_tl->selectClip(i);
+        m_tl->refresh();
+        updateInspector();
+        const double mid = track().clipStart(i) + track().joinOverlap(i) / 2.0;
+        setPlayhead(mid);
+        afterEdit();
+        statusBar()->showMessage(QString("Dropped %1 on the join before clip %2. Drag the block edge to resize it.")
+                                     .arg(transitionLabel(name)).arg(i + 1));
+    });
+    connect(m_tl, &TimelineWidget::removeEffectRequested, this, [this](int i) {
+        if (i < 0 || i >= track().clips().size()) return;
+        checkpoint("remove-effect");
+        track().clips()[i].effect = "None";
+        m_tl->refresh(); updateInspector(); markFxStale();
+        statusBar()->showMessage("Effect removed.");
+    });
+    connect(m_tl, &TimelineWidget::removeTransitionRequested, this, [this](int i) {
+        if (i <= 0 || i >= track().clips().size()) return;
+        checkpoint("remove-transition");
+        track().clips()[i].transition = "None";
+        m_tl->refresh(); updateInspector(); markFxStale();
+        statusBar()->showMessage("Transition removed. The clips now cut straight.");
+    });
+    connect(m_tl, &TimelineWidget::transitionEditStarted, this, [this](int) {
+        checkpoint("transition-length");          // remember the length before the drag
+    });
+    connect(m_tl, &TimelineWidget::transitionEditFinished, this, [this] {
+        m_tl->refresh();
+        updateInspector();
+        markFxStale();
+    });
+
+    // AI assistant
+    connect(m_agent, &AiAgent::assistantText, this, [this](const QString& t) { appendChat("OpenClip AI", t, false); });
+    connect(m_agent, &AiAgent::status, this, [this](const QString& s) { if (m_aiStatus) m_aiStatus->setText(s); });
+    connect(m_agent, &AiAgent::failed, this, [this](const QString& s) {
+        appendChat("OpenClip AI", s, false);
+        if (m_aiStatus) m_aiStatus->setText("Ready");
+    });
+    connect(m_agent, &AiAgent::finished, this, [this] {
+        if (m_aiSend) m_aiSend->setEnabled(true);
+        if (m_aiStatus) m_aiStatus->setText("Ready");
+        if (m_aiInput) m_aiInput->setFocus();
+    });
     connect(m_player, &QMediaPlayer::positionChanged, this, &MainWindow::onPosition);
     connect(m_player, &QMediaPlayer::playbackStateChanged, this, [this](QMediaPlayer::PlaybackState s) {
         m_playBtn->setIcon(glyphIcon(s == QMediaPlayer::PlayingState));
@@ -251,7 +377,7 @@ QDockWidget* MainWindow::makeDock(const QString& title, const QString& objectNam
 }
 
 void MainWindow::applyWorkspace(const QString& name, bool withSizes) {
-    const QList<QDockWidget*> all{m_dProject, m_dEffects, m_dTransitions, m_dTitles, m_dTemplates, m_dProps, m_dTimeline};
+    const QList<QDockWidget*> all{m_dProject, m_dEffects, m_dTransitions, m_dTitles, m_dTemplates, m_dProps, m_dTimeline, m_dAi};
     for (auto* d : all) { d->setFloating(false); removeDockWidget(d); }
     addDockWidget(Qt::LeftDockWidgetArea, m_dProject);
     for (auto* d : {m_dEffects, m_dTransitions, m_dTitles, m_dTemplates}) {
@@ -259,6 +385,8 @@ void MainWindow::applyWorkspace(const QString& name, bool withSizes) {
         tabifyDockWidget(m_dProject, d);
     }
     addDockWidget(Qt::RightDockWidgetArea, m_dProps);
+    addDockWidget(Qt::RightDockWidgetArea, m_dAi);
+    tabifyDockWidget(m_dProps, m_dAi);
     addDockWidget(Qt::BottomDockWidgetArea, m_dTimeline);
     for (auto* d : all) d->show();
 
@@ -267,6 +395,7 @@ void MainWindow::applyWorkspace(const QString& name, bool withSizes) {
     if (name == "Assembly") { left = 560; bottom = 340; }
     else if (name == "Effects") front = m_dEffects;
     else if (name == "Titles") front = m_dTitles;
+    else if (name == "AI") front = m_dAi;
     front->raise();
     if (name == "Assembly") m_dProps->hide();
 
@@ -320,6 +449,13 @@ void MainWindow::buildMenus() {
     auto* addT = gfx->addMenu("Add Title");
     for (const QString& s : kTextStyles) addT->addAction(s, this, [this, s] { addTextWithStyle(s); });
 
+    auto* aiMenu = mb->addMenu("AI");
+    aiMenu->addAction("Ask the AI Assistant", this, [this] {
+        if (m_dAi) { m_dAi->show(); m_dAi->raise(); }
+        if (m_aiInput) m_aiInput->setFocus();
+    })->setShortcut(QKeySequence("Ctrl+Shift+A"));
+    aiMenu->addAction("New chat", this, &MainWindow::newAiChat);
+
     auto* view = mb->addMenu("View");
     view->addAction("Zoom In Timeline", this, [this] { m_zoom->setValue(int(m_zoom->value() * 1.25) + 1); })->setShortcut(QKeySequence("Ctrl+="));
     view->addAction("Zoom Out Timeline", this, [this] { m_zoom->setValue(int(m_zoom->value() / 1.25)); })->setShortcut(QKeySequence("Ctrl+-"));
@@ -331,11 +467,11 @@ void MainWindow::buildMenus() {
 
     auto* win = mb->addMenu("Window");
     auto* ws = win->addMenu("Workspaces");
-    for (const QString& n : {"Editing", "Assembly", "Effects", "Titles"})
+    for (const QString& n : {"Editing", "Assembly", "Effects", "Titles", "AI"})
         ws->addAction(n, this, [this, n] { applyWorkspace(n, true); });
     win->addAction("Reset to Default Layout", this, [this] { applyWorkspace("Editing", true); });
     win->addSeparator();
-    for (auto* d : {m_dProject, m_dEffects, m_dTransitions, m_dTitles, m_dTemplates, m_dProps, m_dTimeline})
+    for (auto* d : {m_dProject, m_dEffects, m_dTransitions, m_dTitles, m_dTemplates, m_dProps, m_dTimeline, m_dAi})
         win->addAction(d->toggleViewAction());
 
     auto* help = mb->addMenu("Help");
@@ -439,19 +575,100 @@ QWidget* MainWindow::buildMediaPanel() {
 }
 
 QWidget* MainWindow::buildListPanel(const QString& hint, const QStringList& items, bool transitions,
-                                    std::function<void(const QString&)> onClick) {
+                                    std::function<void(const QString&)> onClick,
+                                    const QString& dragMime) {
     auto* page = new QWidget; page->setObjectName("panel");
     auto* v = new QVBoxLayout(page);
     v->setContentsMargins(10, 10, 10, 10); v->setSpacing(8);
     auto* h = new QLabel(hint); h->setObjectName("hint"); h->setWordWrap(true);
-    auto* list = new QListWidget;
+    QListWidget* list = dragMime.isEmpty() ? new QListWidget : new DragList(dragMime);
     for (const QString& n : items) {
         auto* it = new QListWidgetItem(transitions ? transitionLabel(n) : n);
         it->setData(Qt::UserRole, n);
+        if (!dragMime.isEmpty()) {
+            it->setToolTip(transitions
+                ? QString("Drag onto a cut in the timeline, or click to apply %1 to the selected clip.").arg(transitionLabel(n))
+                : QString("Drag onto a clip in the timeline, or click to apply %1 to the selected clip.").arg(n));
+        }
         list->addItem(it);
     }
     v->addWidget(h); v->addWidget(list, 1);
     connect(list, &QListWidget::itemClicked, this, [onClick](QListWidgetItem* it) { onClick(it->data(Qt::UserRole).toString()); });
+    return page;
+}
+
+QWidget* MainWindow::buildAiPanel() {
+    auto* page = new QWidget; page->setObjectName("panel");
+    auto* v = new QVBoxLayout(page);
+    v->setContentsMargins(10, 10, 10, 10); v->setSpacing(8);
+
+    auto* intro = new QLabel("Ask in plain words. The assistant can add clips, looks, transitions, titles, "
+                             "speed and colour changes, cuts and previews - right on your timeline.");
+    intro->setObjectName("hint"); intro->setWordWrap(true);
+
+    m_aiPreset = new QComboBox;
+    for (const auto& p : kAiPresets) m_aiPreset->addItem(tr(p.label), QString::fromLatin1(p.key));
+    m_aiUrl = new QLineEdit;   m_aiUrl->setPlaceholderText("Base URL (usually ends with /v1)");
+    m_aiModel = new QLineEdit; m_aiModel->setPlaceholderText("Model name");
+    m_aiKey = new QLineEdit;   m_aiKey->setEchoMode(QLineEdit::Password);
+    m_aiKey->setPlaceholderText("API key - leave empty for Ollama");
+    m_aiAsk = new QCheckBox("Ask me before changing the timeline");
+    auto* save = new QPushButton("Save AI settings");
+    auto* note = new QLabel("Free options: Ollama runs on this PC with no key; Groq, Gemini and OpenRouter give free keys. "
+                            "The key is stored only on this PC. Only timeline details (file names, effects) are sent - never your videos.");
+    note->setObjectName("hint"); note->setWordWrap(true);
+
+    auto* provider = new QWidget; provider->setObjectName("glassbox");
+    auto* pv = new QVBoxLayout(provider);
+    pv->setContentsMargins(9, 9, 9, 9); pv->setSpacing(6);
+    pv->addWidget(m_aiPreset); pv->addWidget(m_aiUrl); pv->addWidget(m_aiModel); pv->addWidget(m_aiKey);
+    pv->addWidget(m_aiAsk); pv->addWidget(save); pv->addWidget(note);
+
+    m_chat = new QTextBrowser;
+    m_chat->setObjectName("chat");
+    m_chat->setOpenExternalLinks(true);
+    m_chat->setMinimumHeight(180);
+    m_chat->setPlaceholderText("Your conversation with the assistant appears here.");
+
+    m_aiStatus = new QLabel("Ready"); m_aiStatus->setObjectName("muted");
+    m_aiInput = new QLineEdit;
+    m_aiInput->setPlaceholderText("Ask OpenClip AI...");
+    m_aiSend = new QPushButton("Send"); m_aiSend->setObjectName("accent");
+    auto* fresh = new QPushButton("New chat");
+
+    auto* row = new QHBoxLayout;
+    row->setSpacing(6);
+    row->addWidget(m_aiInput, 1); row->addWidget(m_aiSend); row->addWidget(fresh);
+
+    v->addWidget(intro);
+    v->addWidget(provider);
+    v->addWidget(m_chat, 1);
+    v->addWidget(m_aiStatus);
+    v->addLayout(row);
+
+    QSettings st("OpenClip", "OpenClip");
+    const QString presetKey = st.value("ai/preset", "ollama").toString();
+    int idx = m_aiPreset->findData(presetKey);
+    if (idx < 0) idx = 0;
+    {
+        QSignalBlocker b(m_aiPreset);
+        m_aiPreset->setCurrentIndex(idx);
+    }
+    const AiPresetInfo* preset = findAiPreset(presetKey);
+    m_aiUrl->setText(st.value("ai/url", preset ? QString::fromLatin1(preset->url) : QString()).toString());
+    m_aiModel->setText(st.value("ai/model", preset ? QString::fromLatin1(preset->model) : QString()).toString());
+    m_aiKey->setText(st.value("ai/key/" + presetKey).toString());
+    m_aiAsk->setChecked(st.value("ai/ask", true).toBool());
+
+    connect(m_aiPreset, QOverload<int>::of(&QComboBox::currentIndexChanged), this, &MainWindow::applyAiPreset);
+    connect(save, &QPushButton::clicked, this, &MainWindow::saveAiSettings);
+    connect(m_aiSend, &QPushButton::clicked, this, &MainWindow::sendAiMessage);
+    connect(m_aiInput, &QLineEdit::returnPressed, this, &MainWindow::sendAiMessage);
+    connect(fresh, &QPushButton::clicked, this, &MainWindow::newAiChat);
+
+    appendChat("OpenClip AI", "Hi! Tell me how you want the video to feel, for example: "
+                              "\"make clip 2 black and white and add a slow fade\", or "
+                              "\"put a title at the start for 3 seconds\".");
     return page;
 }
 
@@ -462,7 +679,12 @@ QWidget* MainWindow::buildTemplatesPanel() {
     auto* th = new QLabel("Start from a ready-made edit: pick a template, choose a video for each part, and OpenClip builds the project with effects, transitions and titles already set.");
     th->setObjectName("hint"); th->setWordWrap(true);
     auto* tb = new QPushButton("Browse templates..."); tb->setObjectName("accent");
-    auto* names = new QLabel("• Gameplay Highlight\n• Vertical Short\n• Kill Montage\n• Cinematic Trailer");
+    // \u escapes keep this file pure ASCII, so the bullet never depends on the build code page.
+    auto* names = new QLabel(QStringLiteral(
+        "\u2022 Gameplay Highlight\n"
+        "\u2022 Vertical Short\n"
+        "\u2022 Kill Montage\n"
+        "\u2022 Cinematic Trailer"));
     names->setObjectName("hint");
     tv->addWidget(th); tv->addWidget(tb); tv->addWidget(names); tv->addStretch();
     connect(tb, &QPushButton::clicked, this, &MainWindow::newFromTemplate);
@@ -851,6 +1073,352 @@ void MainWindow::addTextWithStyle(const QString& style) {
     m_textEdit->setFocus();
     m_textEdit->selectAll();
     statusBar()->showMessage("Title added. Type your words in the Properties panel.");
+}
+
+// ---- AI assistant ---------------------------------------------------------------------------------------
+
+AiSettings MainWindow::aiSettings() const {
+    AiSettings s;
+    if (m_aiPreset) s.preset = m_aiPreset->currentData().toString();
+    if (m_aiUrl) s.baseUrl = m_aiUrl->text().trimmed();
+    if (m_aiModel) s.model = m_aiModel->text().trimmed();
+    if (m_aiKey) s.apiKey = m_aiKey->text().trimmed();
+    if (m_aiAsk) s.askBefore = m_aiAsk->isChecked();
+    return s;
+}
+
+void MainWindow::saveAiSettings() {
+    if (!m_aiPreset || !m_aiUrl || !m_aiModel || !m_aiKey || !m_aiAsk) return;
+    const QString presetKey = m_aiPreset->currentData().toString();
+    QSettings st("OpenClip", "OpenClip");
+    st.setValue("ai/preset", presetKey);
+    st.setValue("ai/url", m_aiUrl->text().trimmed());
+    st.setValue("ai/model", m_aiModel->text().trimmed());
+    st.setValue("ai/ask", m_aiAsk->isChecked());
+    st.setValue("ai/key/" + presetKey, m_aiKey->text().trimmed());
+    if (m_aiStatus) m_aiStatus->setText("Settings saved");
+    statusBar()->showMessage("AI settings saved on this PC.");
+}
+
+void MainWindow::applyAiPreset(int index) {
+    if (index < 0 || !m_aiPreset || !m_aiUrl || !m_aiModel || !m_aiKey) return;
+    const QString key = m_aiPreset->itemData(index).toString();
+    const AiPresetInfo* p = findAiPreset(key);
+    if (!p) return;
+    if (key != "custom") {
+        m_aiUrl->setText(QString::fromLatin1(p->url));
+        m_aiModel->setText(QString::fromLatin1(p->model));
+    }
+    QSettings st("OpenClip", "OpenClip");
+    m_aiKey->setText(st.value("ai/key/" + key).toString());
+    if (m_aiStatus) m_aiStatus->setText(p->needsKey ? "Needs a free API key" : "Ready - no key needed");
+    statusBar()->showMessage(QString::fromLatin1(p->note));
+}
+
+void MainWindow::appendChat(const QString& who, const QString& text, bool user) {
+    if (!m_chat) return;
+    QString html = text.toHtmlEscaped();
+    html.replace('\n', "<br>");
+    m_chat->append(QString("<div style=\"margin:6px 2px\">"
+                           "<span style=\"color:%1;font-weight:bold\">%2</span><br>%3</div>")
+                       .arg(user ? QStringLiteral("#67E8F9") : QStringLiteral("#C4B5FD"),
+                            who.toHtmlEscaped(), html));
+    if (auto* bar = m_chat->verticalScrollBar()) bar->setValue(bar->maximum());
+}
+
+void MainWindow::newAiChat() {
+    if (m_agent) m_agent->reset();
+    if (m_chat) m_chat->clear();
+    if (m_aiStatus) m_aiStatus->setText("Ready");
+    if (m_aiSend) m_aiSend->setEnabled(true);
+    appendChat("OpenClip AI", "New chat. What should we edit?", false);
+    if (m_dAi) { m_dAi->show(); m_dAi->raise(); }
+    if (m_aiInput) m_aiInput->setFocus();
+}
+
+QString MainWindow::aiSystemPrompt() const {
+    return QStringLiteral(
+        "You are the editing assistant inside OpenClip, a free Windows video editor. "
+        "You change the user's timeline only through the tools you have been given.\n"
+        "Rules:\n"
+        "- Call get_timeline before changing anything, and use the 0-based indexes it returns.\n"
+        "- Times are in seconds. Keep replies short, warm and clear (1-3 sentences).\n"
+        "- Prefer one clear change per tool call. Never invent file names or clip indexes.\n"
+        "- If a tool cannot do what the user asks, say so honestly instead of pretending.\n"
+        "- Do not say you exported, rendered or uploaded anything: the user presses Export for that.");
+}
+
+QString MainWindow::describeAiCall(const QString& name, const QJsonObject& args) const {
+    if (name == "get_timeline") return "Read the timeline and media library";
+    if (name == "add_clip")     return QString("Add media item %1 to the timeline").arg(args.value("media").toInt());
+    if (name == "set_effect")   return QString("Set the look \"%1\" on clip %2").arg(args.value("effect").toString()).arg(args.value("clip").toInt() + 1);
+    if (name == "set_transition") return QString("Add the %1 transition before clip %2").arg(args.value("transition").toString()).arg(args.value("clip").toInt() + 1);
+    if (name == "set_speed")    return QString("Set clip %1 speed to %2x").arg(args.value("clip").toInt() + 1).arg(args.value("speed").toDouble(), 0, 'f', 2);
+    if (name == "set_colour")   return QString("Adjust colour on clip %1").arg(args.value("clip").toInt() + 1);
+    if (name == "add_title")    return QString("Add the title \"%1\"").arg(args.value("text").toString());
+    if (name == "split_at")     return QString("Split the clip at %1 s").arg(args.value("time").toDouble(), 0, 'f', 1);
+    if (name == "remove_clip")  return QString("Delete clip %1").arg(args.value("clip").toInt() + 1);
+    if (name == "seek")         return QString("Move the playhead to %1 s").arg(args.value("time").toDouble(), 0, 'f', 1);
+    return "Run " + name;
+}
+
+bool MainWindow::approveAiTools(const QJsonArray& calls) {
+    if (!m_aiAsk || !m_aiAsk->isChecked()) return true;
+    QStringList lines;
+    for (const QJsonValue& v : calls) {
+        const QJsonObject call = v.toObject();
+        const QJsonObject fn = call.value("function").toObject();
+        QJsonObject args;
+        const QJsonValue raw = fn.value("arguments");
+        if (raw.isObject()) args = raw.toObject();
+        else if (raw.isString()) {
+            const QJsonDocument d = QJsonDocument::fromJson(raw.toString().toUtf8());
+            if (d.isObject()) args = d.object();
+        }
+        lines << QStringLiteral("\u2022  %1").arg(describeAiCall(fn.value("name").toString(), args));
+    }
+    const auto r = QMessageBox::question(this, "Apply AI changes",
+        "The assistant wants to:\n\n" + lines.join("\n") + "\n\nApply these changes?\n"
+        "(You can turn this question off in the AI panel, and undo with Ctrl+Z.)",
+        QMessageBox::Yes | QMessageBox::No, QMessageBox::Yes);
+    return r == QMessageBox::Yes;
+}
+
+QJsonObject MainWindow::timelineSnapshot() {
+    QJsonObject out;
+    out["duration"] = track().duration();
+    out["playhead"] = m_tl ? m_tl->playhead() : 0.0;
+
+    QJsonArray clips;
+    for (int i = 0; i < track().clips().size(); ++i) {
+        const Clip& c = track().clips()[i];
+        QJsonObject j;
+        j["index"] = i;
+        j["file"] = QFileInfo(c.path).fileName();
+        j["start"] = track().clipStart(i);
+        j["duration"] = c.duration();
+        j["speed"] = c.speed;
+        j["effect"] = c.effect;
+        j["transition"] = c.transition;
+        j["transitionDuration"] = track().joinOverlap(i);
+        clips.append(j);
+    }
+    out["clips"] = clips;
+
+    QJsonArray titles;
+    for (int i = 0; i < m_texts.size(); ++i) {
+        const TextItem& t = m_texts[i];
+        QJsonObject j;
+        j["index"] = i;
+        j["text"] = t.text;
+        j["start"] = t.start;
+        j["duration"] = t.duration;
+        j["style"] = t.style;
+        j["position"] = t.position;
+        titles.append(j);
+    }
+    out["titles"] = titles;
+
+    QJsonArray media;
+    if (m_media) {
+        for (int i = 0; i < m_media->count(); ++i) {
+            const QListWidgetItem* it = m_media->item(i);
+            QJsonObject j;
+            j["index"] = i;
+            j["file"] = QFileInfo(it->data(Qt::UserRole).toString()).fileName();
+            j["duration"] = it->data(Qt::UserRole + 1).toDouble();
+            media.append(j);
+        }
+    }
+    out["media"] = media;
+    return out;
+}
+
+QJsonObject MainWindow::runAiTool(const QString& name, const QJsonObject& args) {
+    auto fail = [](const QString& msg) {
+        QJsonObject o; o["ok"] = false; o["error"] = msg; return o;
+    };
+    auto done = [] { QJsonObject o; o["ok"] = true; return o; };
+
+    if (name == "get_timeline") {
+        QJsonObject o = done();
+        o["timeline"] = timelineSnapshot();
+        o["hint"] = QStringLiteral("Clip and media indexes are 0-based. Times are seconds.");
+        return o;
+    }
+
+    if (name == "seek") {
+        const double t = std::clamp(args.value("time").toDouble(0.0), 0.0,
+                                    std::max(0.0, track().duration()));
+        if (!track().clips().isEmpty()) seek(t);
+        QJsonObject o = done(); o["time"] = t; return o;
+    }
+
+    if (name == "add_clip") {
+        const int idx = args.value("media").toInt(-1);
+        if (!m_media || idx < 0 || idx >= m_media->count())
+            return fail(QString("There is no media item %1. Call get_timeline to see the media library (0-based).").arg(idx));
+        if (m_media->item(idx)->data(Qt::UserRole + 1).toDouble() <= 0)
+            return fail("That media item has no readable duration.");
+        addMediaItem(m_media->item(idx));
+        QJsonObject o = done();
+        o["clip"] = track().clips().size() - 1;
+        o["file"] = QFileInfo(track().clips().last().path).fileName();
+        return o;
+    }
+
+    if (name == "set_effect") {
+        const int i = args.value("clip").toInt(-1);
+        if (i < 0 || i >= track().clips().size())
+            return fail(QString("There is no clip %1. Call get_timeline first.").arg(i));
+        const QString e = args.value("effect").toString();
+        if (!kEffects.contains(e))
+            return fail("Unknown effect \"" + e + "\". Use one of: " + kEffects.join(", "));
+        checkpoint("ai-effect");
+        track().clips()[i].effect = e;
+        m_tl->selectClip(i);
+        m_tl->refresh();
+        updateInspector();
+        markFxStale();
+        QJsonObject o = done(); o["clip"] = i; o["effect"] = e; return o;
+    }
+
+    if (name == "set_transition") {
+        const int i = args.value("clip").toInt(-1);
+        if (i <= 0 || i >= track().clips().size())
+            return fail(QString("Clip %1 cannot take a transition: the index must be 1 or more, and less than the clip count %2.")
+                            .arg(i).arg(track().clips().size()));
+        const QString t = args.value("transition").toString();
+        if (!kTransitions.contains(t))
+            return fail("Unknown transition \"" + t + "\". Use an FFmpeg xfade name such as fade, dissolve, slideleft, circleopen.");
+        checkpoint("ai-transition");
+        Clip& cur = track().clips()[i];
+        cur.transition = t;
+        if (args.contains("duration") && args.value("duration").toDouble() > 0) {
+            const double maxDur = std::max(0.1, std::min(2.0, 0.5 * std::min(track().clips()[i - 1].duration(), cur.duration())));
+            cur.transitionDur = std::clamp(args.value("duration").toDouble(0.5), 0.1, maxDur);
+        }
+        m_tl->selectClip(i);
+        m_tl->refresh();
+        updateInspector();
+        const double mid = track().clipStart(i) + track().joinOverlap(i) / 2.0;
+        setPlayhead(mid);
+        markFxStale();
+        QJsonObject o = done(); o["clip"] = i; o["transition"] = t; o["duration"] = cur.transitionDur; return o;
+    }
+
+    if (name == "set_speed") {
+        const int i = args.value("clip").toInt(-1);
+        if (i < 0 || i >= track().clips().size())
+            return fail(QString("There is no clip %1. Call get_timeline first.").arg(i));
+        const double sp = std::clamp(args.value("speed").toDouble(1.0), 0.5, 2.0);
+        checkpoint("ai-speed");
+        track().clips()[i].speed = sp;
+        m_tl->selectClip(i);
+        m_tl->refresh();
+        updateInspector();
+        afterEdit();
+        QJsonObject o = done(); o["clip"] = i; o["speed"] = sp; return o;
+    }
+
+    if (name == "set_colour") {
+        const int i = args.value("clip").toInt(-1);
+        if (i < 0 || i >= track().clips().size())
+            return fail(QString("There is no clip %1. Call get_timeline first.").arg(i));
+        checkpoint("ai-colour");
+        Clip& c = track().clips()[i];
+        if (args.contains("brightness")) c.brightness = std::clamp(args.value("brightness").toDouble(0.0), -1.0, 1.0);
+        if (args.contains("contrast"))   c.contrast   = std::clamp(args.value("contrast").toDouble(1.0), 0.0, 3.0);
+        if (args.contains("saturation")) c.saturation = std::clamp(args.value("saturation").toDouble(1.0), 0.0, 3.0);
+        m_tl->selectClip(i);
+        m_tl->refresh();
+        updateInspector();
+        markFxStale();
+        QJsonObject o = done();
+        o["brightness"] = c.brightness; o["contrast"] = c.contrast; o["saturation"] = c.saturation;
+        return o;
+    }
+
+    if (name == "add_title") {
+        const QString text = args.value("text").toString().trimmed();
+        if (text.isEmpty()) return fail("The title text is empty.");
+        QString style = args.value("style").toString();
+        if (!kTextStyles.contains(style)) style = "Gaming";
+        QString pos = args.value("position").toString();
+        if (!kTextPositions.contains(pos)) pos = "Bottom";
+        TextItem t;
+        t.text = text;
+        t.start = std::max(0.0, args.value("start").toDouble(m_tl->playhead()));
+        t.duration = std::clamp(args.value("duration").toDouble(3.0), 0.5, 600.0);
+        t.style = style;
+        t.position = pos;
+        checkpoint("ai-title");
+        m_texts.append(t);
+        m_tl->refresh();
+        m_tl->selectText(m_texts.size() - 1);
+        markFxStale();
+        QJsonObject o = done(); o["title"] = m_texts.size() - 1; o["text"] = text; return o;
+    }
+
+    if (name == "split_at") {
+        m_player->pause();
+        Track trial = track();
+        const double at = args.value("time").toDouble(m_tl->playhead());
+        if (!trial.splitAt(at))
+            return fail(QString("No clip can be cut at %1 s. The time must be inside a clip and not inside a transition.").arg(at, 0, 'f', 2));
+        checkpoint("ai-split");
+        track() = trial;
+        m_tl->clearSelection();
+        afterEdit();
+        QJsonObject o = done(); o["time"] = at; return o;
+    }
+
+    if (name == "remove_clip") {
+        const int i = args.value("clip").toInt(-1);
+        if (i < 0 || i >= track().clips().size())
+            return fail(QString("There is no clip %1. Call get_timeline first.").arg(i));
+        checkpoint("ai-remove");
+        m_player->pause();
+        track().remove(i);
+        m_tl->clearSelection();
+        afterEdit();
+        QJsonObject o = done(); o["removed"] = i; return o;
+    }
+
+    return fail("Unknown tool \"" + name + "\".");
+}
+
+void MainWindow::sendAiMessage() {
+    if (!m_agent || !m_aiInput) return;
+    if (m_agent->busy()) return;
+    const QString text = m_aiInput->text().trimmed();
+    if (text.isEmpty()) return;
+
+    AiSettings s = aiSettings();
+    if (s.baseUrl.isEmpty()) {
+        statusBar()->showMessage("Choose a provider or type a Base URL first.");
+        appendChat("OpenClip AI", "I need a provider first. Pick one in the list above (Ollama is free and needs no key).", false);
+        return;
+    }
+    if (s.model.isEmpty()) {
+        appendChat("OpenClip AI", "The model name is empty. Put one in the AI settings above (for example llama3.2).", false);
+        return;
+    }
+    const AiPresetInfo* p = findAiPreset(s.preset);
+    if (p && p->needsKey && s.apiKey.isEmpty()) {
+        appendChat("OpenClip AI", QString("This provider needs a free API key. %1").arg(QString::fromLatin1(p->note)), false);
+        statusBar()->showMessage("Paste an API key in the AI panel first.");
+        return;
+    }
+
+    saveAiSettings();
+    appendChat("You", text, true);
+    m_aiInput->clear();
+    m_aiSend->setEnabled(false);
+    if (m_aiStatus) m_aiStatus->setText("Thinking...");
+    m_agent->start(s, aiSystemPrompt(), text,
+        [this](const QString& n, const QJsonObject& a) { return runAiTool(n, a); },
+        [this](const QJsonArray& c) { return approveAiTools(c); });
 }
 
 // ---- inspector sync ---------------------------------------------------------------------------------------

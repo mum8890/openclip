@@ -9,7 +9,9 @@ inline const QStringList kEffects{"None", "Black & White", "Vivid", "Warm", "Coo
                                   "Noir", "Golden Hour", "Teal & Orange", "Cyberpunk",
                                   "Cold Night", "Vintage", "Faded Film", "Punch", "Dream",
                                   "Old Film", "Invert", "Mirror", "Sketch", "Infrared",
-                                  "Killcam Red", "Night Vision", "HDR Boost"};
+                                  "Killcam Red", "Night Vision", "HDR Boost",
+                                  "Neon Glow", "VHS", "Blocky", "Chromatic", "Frost",
+                                  "Moody", "Sunkissed", "Twilight", "Bleach", "Lomo"};
 // names are FFmpeg xfade transitions
 inline const QStringList kTransitions{"None", "fade", "fadeblack", "fadewhite", "dissolve",
                                       "wipeleft", "wiperight", "wipeup", "wipedown",

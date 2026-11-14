@@ -1,5 +1,5 @@
 #ifndef AppVer
-#define AppVer "0.7.0"
+#define AppVer "0.8.0"
 #endif
 
 [Setup]
